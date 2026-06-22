@@ -510,6 +510,7 @@ async def show_faq_pages(
 
     await callback.message.edit_text(
         caption,
+        parse_mode='HTML',
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons),
         disable_web_page_preview=settings.DISABLE_WEB_PAGE_PREVIEW,
     )
@@ -647,6 +648,7 @@ async def show_faq_page(
 
     await callback.message.edit_text(
         message_text,
+        parse_mode='HTML',
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
         disable_web_page_preview=settings.DISABLE_WEB_PAGE_PREVIEW,
     )
@@ -764,6 +766,7 @@ async def show_privacy_policy(
 
     await callback.message.edit_text(
         message_text,
+        parse_mode='HTML',
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
         disable_web_page_preview=settings.DISABLE_WEB_PAGE_PREVIEW,
     )
@@ -881,6 +884,7 @@ async def show_public_offer(
 
     await callback.message.edit_text(
         message_text,
+        parse_mode='HTML',
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
         disable_web_page_preview=settings.DISABLE_WEB_PAGE_PREVIEW,
     )

@@ -31,26 +31,7 @@ CALLBACK_TO_CABINET_PATH: dict[str, str] = {
 
 # Default button styles per callback_data for cabinet mode.
 # Values: 'primary' (blue), 'success' (green), 'danger' (red), None (default).
-CALLBACK_TO_CABINET_STYLE: dict[str, str] = {
-    'menu_balance': 'primary',
-    'balance_topup': 'primary',
-    'menu_subscription': 'success',
-    'subscription': 'success',
-    'subscription_extend': 'success',
-    'subscription_upgrade': 'success',
-    'subscription_connect': 'success',
-    'subscription_resume_checkout': 'success',
-    'return_to_saved_cart': 'success',
-    'menu_buy': 'success',
-    'buy_traffic': 'success',
-    'menu_referrals': 'success',
-    'menu_referral': 'success',
-    'menu_promocode': 'primary',
-    'menu_support': 'primary',
-    'menu_info': 'primary',
-    'menu_profile': 'primary',
-    'back_to_menu': 'primary',
-}
+CALLBACK_TO_CABINET_STYLE: dict[str, str] = {}
 
 # Mapping from broadcast button keys to cabinet paths.
 BUTTON_KEY_TO_CABINET_PATH: dict[str, str] = {

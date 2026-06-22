@@ -390,6 +390,7 @@ class Settings(BaseSettings):
     # Отключение превью ссылок в сообщениях бота
     DISABLE_WEB_PAGE_PREVIEW: bool = False
     ACTIVATE_BUTTON_VISIBLE: bool = False
+    INFO_MENU_VISIBLE: bool = True
     ACTIVATE_BUTTON_TEXT: str = 'активировать'
     PAYMENT_BALANCE_DESCRIPTION: str = 'Пополнение баланса'
     PAYMENT_SUBSCRIPTION_DESCRIPTION: str = 'Оплата подписки'

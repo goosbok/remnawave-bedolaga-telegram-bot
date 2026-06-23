@@ -938,6 +938,33 @@ def get_happ_cryptolink_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def get_connect_steps_kb(
+    texts,
+    subscription_link: str | None,
+    happ_redirect_link: str | None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(
+        text=texts.t('HAPP_DOWNLOAD_IOS_BUTTON', '🍎 Установить Happ'),
+        callback_data='happ_download_ios',
+    )])
+    if happ_redirect_link:
+        rows.append([InlineKeyboardButton(
+            text=texts.t('CONNECT_ADD_VPN_BUTTON', '➡️ Добавить VPN в Happ'),
+            url=happ_redirect_link,
+        )])
+    elif subscription_link:
+        rows.append([InlineKeyboardButton(
+            text=texts.t('CONNECT_OPEN_SUB_BUTTON', '🔗 Открыть подписку'),
+            url=subscription_link,
+        )])
+    rows.append([InlineKeyboardButton(
+        text=texts.t('CONNECT_GUIDE_BUTTON', '📖 Инструкция со скринами'),
+        url='https://help.herb-life1324213d.store/',
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def get_happ_download_platform_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
     texts = get_texts(language)
     buttons = [

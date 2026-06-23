@@ -10,6 +10,15 @@ from app.database.models import Subscription
 
 logger = structlog.get_logger(__name__)
 
+CONNECT_STEPS_TEXT = (
+    "🎉 <b>Готово, оплата прошла!</b>\n\n"
+    "Подключись за 3 шага:\n"
+    "1️⃣ Установи приложение <b>Happ</b>\n"
+    "2️⃣ Нажми <b>«Добавить VPN в Happ»</b> — подписка добавится сама\n"
+    "3️⃣ Открой Happ → кнопка включения → можно в интернет\n\n"
+    "Не получилось? Открой <b>инструкцию со скринами</b> 👇"
+)
+
 
 async def cleanup_duplicate_subscriptions(db: AsyncSession) -> int:
     # В multi-tariff режиме несколько подписок у пользователя — это нормально

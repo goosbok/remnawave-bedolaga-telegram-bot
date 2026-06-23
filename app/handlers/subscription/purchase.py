@@ -1116,46 +1116,6 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
             ).format(amount=settings.format_price(charged_amount))
 
         if remnawave_user and subscription_link:
-            if settings.is_happ_cryptolink_mode():
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_HAPP_LINK_PROMPT',
-                        '🔒 Ссылка на подписку создана. Нажмите кнопку "Подключиться" ниже, чтобы открыть её в Happ.',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            elif hide_subscription_link:
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_LINK_HIDDEN_NOTICE',
-                        'ℹ️ Ссылка подписки доступна по кнопкам ниже или в разделе "Моя подписка".',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            else:
-                subscription_import_link = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
-
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    f'{subscription_import_link}\n\n'
-                    f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
-                )
-
-            trial_success_text += payment_note
-
             _happ_redirect = get_happ_cryptolink_redirect_link(subscription_link)
             connect_keyboard = get_connect_steps_kb(texts, subscription_link, _happ_redirect)
 
@@ -2553,47 +2513,6 @@ async def confirm_purchase(callback: types.CallbackQuery, state: FSMContext, db_
             )
 
         if remnawave_user and subscription_link:
-            if settings.is_happ_cryptolink_mode():
-                success_text = (
-                    f'{texts.SUBSCRIPTION_PURCHASED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_HAPP_LINK_PROMPT',
-                        '🔒 Ссылка на подписку создана. Нажмите кнопку "Подключиться" ниже, чтобы открыть её в Happ.',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            elif hide_subscription_link:
-                success_text = (
-                    f'{texts.SUBSCRIPTION_PURCHASED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_LINK_HIDDEN_NOTICE',
-                        'ℹ️ Ссылка подписки доступна по кнопкам ниже или в разделе "Моя подписка".',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            else:
-                import_link_section = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
-
-                success_text = (
-                    f'{texts.SUBSCRIPTION_PURCHASED}\n\n'
-                    f'{import_link_section}\n\n'
-                    f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
-                )
-
-            if discount_note:
-                success_text = f'{success_text}\n\n{discount_note}'
-
             _happ_redirect = get_happ_cryptolink_redirect_link(subscription_link)
             connect_keyboard = get_connect_steps_kb(texts, subscription_link, _happ_redirect)
 
@@ -3201,46 +3120,6 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
         ).format(amount=settings.format_price(trial_price_kopeks))
 
         if remnawave_user and subscription_link:
-            if settings.is_happ_cryptolink_mode():
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_HAPP_LINK_PROMPT',
-                        '🔒 Ссылка на подписку создана. Нажмите кнопку "Подключиться" ниже, чтобы открыть её в Happ.',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            elif hide_subscription_link:
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_LINK_HIDDEN_NOTICE',
-                        'ℹ️ Ссылка подписки доступна по кнопкам ниже или в разделе "Моя подписка".',
-                    )
-                    + '\n\n'
-                    + texts.t(
-                        'SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT',
-                        '📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве',
-                    )
-                )
-            else:
-                subscription_import_link = texts.t(
-                    'SUBSCRIPTION_IMPORT_LINK_SECTION',
-                    '🔗 <b>Ваша ссылка для импорта в VPN приложение:</b>\n<code>{subscription_url}</code>',
-                ).format(subscription_url=subscription_link)
-
-                trial_success_text = (
-                    f'{texts.TRIAL_ACTIVATED}\n\n'
-                    f'{subscription_import_link}\n\n'
-                    f'{texts.t("SUBSCRIPTION_IMPORT_INSTRUCTION_PROMPT", "📱 Нажмите кнопку ниже, чтобы получить инструкцию по настройке VPN на вашем устройстве")}'
-                )
-
-            trial_success_text += payment_note
-
             _happ_redirect = get_happ_cryptolink_redirect_link(subscription_link)
             connect_keyboard = get_connect_steps_kb(texts, subscription_link, _happ_redirect)
 
@@ -3296,106 +3175,6 @@ async def handle_trial_pay_with_balance(callback: types.CallbackQuery, db_user: 
             reply_markup=get_back_keyboard(db_user.language),
         )
         await callback.answer()
-
-
-def _build_trial_success_keyboard(texts, subscription_link: str, connect_mode: str) -> InlineKeyboardMarkup:
-    """Создает клавиатуру успешной активации триала."""
-
-    if connect_mode == 'miniapp_subscription':
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                        web_app=types.WebAppInfo(url=subscription_link),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                        callback_data='back_to_menu',
-                    )
-                ],
-            ]
-        )
-    if connect_mode == 'miniapp_custom':
-        if not settings.MINIAPP_CUSTOM_URL:
-            return get_back_keyboard(texts.language if hasattr(texts, 'language') else 'ru')
-
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                        web_app=types.WebAppInfo(url=settings.MINIAPP_CUSTOM_URL),
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                        callback_data='back_to_menu',
-                    )
-                ],
-            ]
-        )
-    if connect_mode == 'link':
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                    url=subscription_link,
-                )
-            ]
-        ]
-        happ_row = get_happ_download_button_row(texts)
-        if happ_row:
-            rows.append(happ_row)
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                    callback_data='back_to_menu',
-                )
-            ]
-        )
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-    if connect_mode == 'happ_cryptolink':
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                    callback_data='open_subscription_link',
-                )
-            ]
-        ]
-        happ_row = get_happ_download_button_row(texts)
-        if happ_row:
-            rows.append(happ_row)
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                    callback_data='back_to_menu',
-                )
-            ]
-        )
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                    callback_data='subscription_connect',
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=texts.t('BACK_TO_MAIN_MENU_BUTTON', '⬅️ В главное меню'),
-                    callback_data='back_to_menu',
-                )
-            ],
-        ]
-    )
 
 
 @error_handler

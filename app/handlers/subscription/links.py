@@ -6,12 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.models import User
 from app.keyboards.inline import (
+    get_connect_steps_kb,
     get_device_selection_keyboard,
     get_happ_cryptolink_keyboard,
     get_happ_download_button_row,
 )
 from app.localization.texts import get_texts
 from app.utils.subscription_utils import (
+    CONNECT_STEPS_TEXT,
     convert_subscription_link_to_happ_scheme,
     get_display_subscription_link,
     get_happ_cryptolink_redirect_link,
@@ -150,49 +152,20 @@ async def handle_connect_subscription(
         )
 
     elif connect_mode == 'link':
-        rows = [[InlineKeyboardButton(text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'), url=subscription_link)]]
-        happ_row = get_happ_download_button_row(texts)
-        if happ_row:
-            rows.append(happ_row)
-        rows.append([InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)])
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
+        _happ_redirect = get_happ_cryptolink_redirect_link(subscription_link)
+        keyboard = get_connect_steps_kb(texts, subscription_link, _happ_redirect)
 
         await callback.message.edit_text(
-            texts.t(
-                'SUBSCRIPTION_CONNECT_LINK_MESSAGE',
-                """🚀 <b>Подключить подписку</b>",
-
-🔗 Нажмите кнопку ниже, чтобы открыть ссылку подписки:""",
-            ),
+            CONNECT_STEPS_TEXT,
             reply_markup=keyboard,
             parse_mode='HTML',
         )
     elif connect_mode == 'happ_cryptolink':
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text=texts.t('CONNECT_BUTTON', '🔗 Подключиться'),
-                    callback_data=f'open_subscription_link:{sub_id}'
-                    if settings.is_multi_tariff_enabled()
-                    else 'open_subscription_link',
-                )
-            ]
-        ]
-        happ_row = get_happ_download_button_row(texts)
-        if happ_row:
-            rows.append(happ_row)
-        rows.append([InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)])
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
+        _happ_redirect = get_happ_cryptolink_redirect_link(subscription_link)
+        keyboard = get_connect_steps_kb(texts, subscription_link, _happ_redirect)
 
         await callback.message.edit_text(
-            texts.t(
-                'SUBSCRIPTION_CONNECT_LINK_MESSAGE',
-                """🚀 <b>Подключить подписку</b>",
-
-🔗 Нажмите кнопку ниже, чтобы открыть ссылку подписки:""",
-            ),
+            CONNECT_STEPS_TEXT,
             reply_markup=keyboard,
             parse_mode='HTML',
         )

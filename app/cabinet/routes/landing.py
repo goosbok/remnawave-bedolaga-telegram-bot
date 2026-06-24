@@ -449,6 +449,27 @@ async def activate_purchase(
     return _build_purchase_status_response(purchase)
 
 
+@router.get('/happ-redirect', include_in_schema=False)
+async def happ_redirect(url: str = Query(...)) -> None:
+    """Redirect subscription URL to happ://crypt4/... deep link.
+
+    Used in emails — href stays HTTPS so mail clients allow it,
+    OS intercepts the happ:// redirect to open Happ directly.
+    """
+    from fastapi.responses import RedirectResponse
+    from app.services.subscription_service import SubscriptionService
+
+    happ_url = ''
+    try:
+        ss = SubscriptionService()
+        async with ss.get_api_client() as api:
+            happ_url = await api.encrypt_happ_crypto_link(url) or ''
+    except Exception:
+        pass
+
+    return RedirectResponse(url=happ_url or url, status_code=302)
+
+
 @router.get('/{slug}', response_model=LandingConfigResponse)
 async def get_landing_config(
     raw_request: Request,
@@ -567,6 +588,21 @@ async def create_landing_purchase(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Gift purchases are not enabled for this landing page',
+        )
+
+    # Self-purchases must use email. A Telegram-username buyer who closes the
+    # payment page before the success redirect has no reachable delivery channel
+    # (no email is sent, and a bot message only works if they already wrote to
+    # the bot), so the subscription becomes effectively unreachable. Email always
+    # works as a backup; Telegram can be linked later in the cabinet. Gifts to
+    # @telegram stay allowed (the recipient gets a bot message / claim link).
+    if body.contact_type == 'telegram' and not body.is_gift:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                'Для покупки укажите email — на него придёт ссылка на подписку. '
+                'Telegram можно будет привязать позже в личном кабинете.'
+            ),
         )
 
     # Validate payment method is available on this landing.

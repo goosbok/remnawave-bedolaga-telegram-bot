@@ -882,11 +882,22 @@ async def send_guest_notification(
     if is_pending_activation and purchase.is_gift:
         success_page_url += '?activate=1'
 
+    # Get encrypted happ:// deep link from Remnawave
+    happ_url = ''
+    if purchase.subscription_url:
+        try:
+            _ss = SubscriptionService()
+            async with _ss.get_api_client() as _api:
+                happ_url = await _api.encrypt_happ_crypto_link(purchase.subscription_url) or ''
+        except Exception:
+            pass
+
     context = {
         'tariff_name': tariff_name,
         'period_days': purchase.period_days,
         'success_page_url': success_page_url,
         'subscription_url': purchase.subscription_url or '',
+        'happ_url': happ_url,
         'is_gift': purchase.is_gift,
         'gift_message': purchase.gift_message,
         'is_existing_user': not is_new_account,
@@ -1635,6 +1646,13 @@ async def _check_and_recover_pending_purchase(
 
     match = await _find_succeeded_provider_payment(db, base_method, purchase_token)
     if match is None:
+        # No locally-recorded succeeded payment. For YooKassa, actively query the
+        # API for the authoritative status: YooKassa does not reliably send a
+        # payment.canceled webhook for abandoned/expired payments, so a guest
+        # purchase can otherwise hang in PENDING forever (and the success page
+        # spins indefinitely). This also recovers a lost success webhook.
+        if base_method.startswith('yookassa'):
+            return await _reconcile_yookassa_pending(db, purchase, purchase_token)
         if base_method:
             logger.debug(
                 'No succeeded provider payment found for PENDING purchase',
@@ -1676,3 +1694,89 @@ async def _check_and_recover_pending_purchase(
         provider_payment_id=provider_payment_id,
     )
     return True
+
+
+async def _reconcile_yookassa_pending(
+    db: AsyncSession,
+    purchase: GuestPurchase,
+    purchase_token: str,
+) -> bool:
+    """Reconcile a PENDING YooKassa purchase against the authoritative API status.
+
+    YooKassa does not reliably deliver a ``payment.canceled`` webhook for
+    abandoned/expired payments, so the local payment record (updated only by
+    webhooks) stays ``pending`` and the guest purchase hangs forever. This fetches
+    the real status from the API and resolves the purchase:
+
+      - ``canceled``  → mark the purchase FAILED (the success page then shows a
+        terminal error instead of spinning).
+      - ``succeeded`` → mark PAID (recovers a lost success webhook), with an
+        amount check.
+
+    Other statuses (``pending`` / ``waiting_for_capture``) are left untouched.
+    Returns ``True`` only when the purchase was transitioned to PAID (so the
+    caller's recovery counter reflects PAID recoveries).
+    """
+    from app.database.crud.landing import update_purchase_status
+    from app.database.models import YooKassaPayment
+    from app.services.yookassa_service import YooKassaService
+
+    # Resolve the YooKassa payment id from our local record (matched by token).
+    result = await db.execute(
+        select(YooKassaPayment.yookassa_payment_id, YooKassaPayment.amount_kopeks)
+        .where(YooKassaPayment.metadata_json['purchase_token'].as_string() == purchase_token)
+        .order_by(YooKassaPayment.id.desc())
+    )
+    row = result.first()
+    if row is None:
+        return False
+    yk_payment_id, yk_amount_kopeks = row
+
+    try:
+        info = await YooKassaService().get_payment_info(yk_payment_id)
+    except Exception:
+        logger.warning(
+            'Failed to query YooKassa status for PENDING purchase',
+            token_prefix=purchase_token[:5],
+            exc_info=True,
+        )
+        return False
+
+    if not info:
+        return False
+
+    yk_status = info.get('status')
+
+    if yk_status == 'canceled':
+        await update_purchase_status(db, purchase_token, GuestPurchaseStatus.FAILED)
+        logger.info(
+            'Marked PENDING guest purchase FAILED (YooKassa reports canceled)',
+            token_prefix=purchase_token[:5],
+            yookassa_payment_id=yk_payment_id,
+        )
+        return False
+
+    if yk_status == 'succeeded' and info.get('paid'):
+        if yk_amount_kopeks is not None and yk_amount_kopeks != purchase.amount_kopeks:
+            logger.error(
+                'Amount mismatch during YooKassa API recovery — skipping',
+                token_prefix=purchase_token[:5],
+                provider_amount=yk_amount_kopeks,
+                purchase_amount=purchase.amount_kopeks,
+            )
+            return False
+        await update_purchase_status(
+            db,
+            purchase_token,
+            GuestPurchaseStatus.PAID,
+            payment_id=yk_payment_id,
+            paid_at=datetime.now(UTC),
+        )
+        logger.info(
+            'Recovered PENDING guest purchase → PAID via YooKassa API',
+            token_prefix=purchase_token[:5],
+            yookassa_payment_id=yk_payment_id,
+        )
+        return True
+
+    return False

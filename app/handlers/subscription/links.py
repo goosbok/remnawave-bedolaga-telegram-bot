@@ -9,7 +9,6 @@ from app.keyboards.inline import (
     get_connect_steps_kb,
     get_device_selection_keyboard,
     get_happ_cryptolink_keyboard,
-    get_happ_download_button_row,
 )
 from app.localization.texts import get_texts
 from app.utils.subscription_utils import (

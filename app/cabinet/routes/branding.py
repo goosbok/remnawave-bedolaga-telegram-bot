@@ -41,6 +41,7 @@ GOOGLE_ADS_ID_KEY = 'CABINET_GOOGLE_ADS_ID'  # Stores conversion ID (e.g. "AW-12
 GOOGLE_ADS_LABEL_KEY = 'CABINET_GOOGLE_ADS_LABEL'  # Stores conversion label (alphanumeric)
 LITE_MODE_ENABLED_KEY = 'CABINET_LITE_MODE_ENABLED'  # Stores "true" or "false"
 GIFT_ENABLED_KEY = 'CABINET_GIFT_ENABLED'  # Stores "true" or "false"
+ADDITIONAL_OPTIONS_VISIBLE_KEY = 'CABINET_ADDITIONAL_OPTIONS_VISIBLE'  # Stores "true" or "false"
 ANIMATION_CONFIG_KEY = 'CABINET_ANIMATION_CONFIG'  # Stores JSON with animation config
 TELEGRAM_WIDGET_SIZE_KEY = 'TELEGRAM_WIDGET_SIZE'
 TELEGRAM_WIDGET_RADIUS_KEY = 'TELEGRAM_WIDGET_RADIUS'
@@ -287,6 +288,18 @@ class GiftEnabledResponse(BaseModel):
 
 class GiftEnabledUpdate(BaseModel):
     """Request to update gift feature setting."""
+
+    enabled: bool
+
+
+class AdditionalOptionsVisibleResponse(BaseModel):
+    """Additional options section visibility setting."""
+
+    enabled: bool = True
+
+
+class AdditionalOptionsVisibleUpdate(BaseModel):
+    """Request to update additional options visibility setting."""
 
     enabled: bool
 
@@ -1034,3 +1047,30 @@ async def update_gift_enabled(
     await set_setting_value(db, GIFT_ENABLED_KEY, str(payload.enabled).lower())
     logger.info('Admin set gift enabled', telegram_id=admin.telegram_id, enabled=payload.enabled)
     return GiftEnabledResponse(enabled=payload.enabled)
+
+
+# ============ Additional Options Visibility Routes ============
+
+
+@router.get('/additional-options', response_model=AdditionalOptionsVisibleResponse)
+async def get_additional_options_visible(
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get additional options section visibility. Public endpoint."""
+    value = await get_setting_value(db, ADDITIONAL_OPTIONS_VISIBLE_KEY)
+    if value is not None:
+        enabled = value.lower() == 'true'
+        return AdditionalOptionsVisibleResponse(enabled=enabled)
+    return AdditionalOptionsVisibleResponse(enabled=True)
+
+
+@router.patch('/additional-options', response_model=AdditionalOptionsVisibleResponse)
+async def update_additional_options_visible(
+    payload: AdditionalOptionsVisibleUpdate,
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Update additional options section visibility. Admin only."""
+    await set_setting_value(db, ADDITIONAL_OPTIONS_VISIBLE_KEY, str(payload.enabled).lower())
+    logger.info('Admin set additional options visible', telegram_id=admin.telegram_id, enabled=payload.enabled)
+    return AdditionalOptionsVisibleResponse(enabled=payload.enabled)

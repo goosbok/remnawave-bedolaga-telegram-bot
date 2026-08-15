@@ -958,10 +958,6 @@ def get_connect_steps_kb(
             text=texts.t('CONNECT_OPEN_SUB_BUTTON', '🔗 Открыть подписку'),
             url=subscription_link,
         )])
-    rows.append([InlineKeyboardButton(
-        text=texts.t('CONNECT_GUIDE_BUTTON', '📖 Инструкция со скринами'),
-        url='https://help.herb-life1324213d.store/',
-    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

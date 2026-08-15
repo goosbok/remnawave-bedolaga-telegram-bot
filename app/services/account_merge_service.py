@@ -634,6 +634,12 @@ async def execute_merge(
         if isinstance(primary, UserModel):
             from app.database.crud.user import lock_user_for_update
 
+            # lock_user_for_update() re-selects with populate_existing=True, which
+            # overwrites any pending in-memory attribute assignments with the
+            # still-unflushed DB values. Steps 1-3 above assign telegram_id/OAuth
+            # ids/email onto `primary` without flushing, so without this flush the
+            # refresh below silently reverts those transfers back to NULL.
+            await db.flush()
             primary = await lock_user_for_update(db, primary)
             secondary = await lock_user_for_update(db, secondary)
             # Re-read after lock in case concurrent payment changed it

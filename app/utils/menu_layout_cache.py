@@ -37,9 +37,41 @@ DEFAULT_MENU_LAYOUT: dict[str, object] = {
     'row_1': {'id': 'row_1', 'buttons': ['home'], 'max_per_row': 1},
     'row_2': {'id': 'row_2', 'buttons': ['subscription', 'balance'], 'max_per_row': 2},
     'row_3': {'id': 'row_3', 'buttons': ['referral', 'support'], 'max_per_row': 2},
-    'row_4': {'id': 'row_4', 'buttons': ['info', 'language'], 'max_per_row': 2},
-    'row_5': {'id': 'row_5', 'buttons': ['admin'], 'max_per_row': 1},
-    'custom_buttons': {},
+    'row_4': {'id': 'row_4', 'buttons': ['custom_privacy_policy', 'custom_public_offer'], 'max_per_row': 2},
+    'row_5': {'id': 'row_5', 'buttons': ['language'], 'max_per_row': 1},
+    'row_6': {'id': 'row_6', 'buttons': ['admin'], 'max_per_row': 1},
+    'custom_buttons': {
+        'custom_privacy_policy': {
+            'id': 'custom_privacy_policy',
+            'url': 'https://telegra.ph/Politika-konfidencialnosti-08-01-83',
+            'style': 'default',
+            'labels': {
+                'ru': '🔒 Политика конфиденциальности',
+                'en': '🔒 Privacy Policy',
+                'ua': '🔒 Політика конфіденційності',
+                'fa': '🔒 حریم خصوصی',
+                'zh': '🔒 隐私政策',
+            },
+            'icon_custom_emoji_id': '',
+            'enabled': True,
+            'open_in': 'external',
+        },
+        'custom_public_offer': {
+            'id': 'custom_public_offer',
+            'url': 'https://telegra.ph/Polzovatelskoe-soglashenie-08-01-39',
+            'style': 'default',
+            'labels': {
+                'ru': '📄 Оферта',
+                'en': '📄 Offer',
+                'ua': '📄 Оферта',
+                'fa': '📄 پیشنهاد',
+                'zh': '📄 用户协议',
+            },
+            'icon_custom_emoji_id': '',
+            'enabled': True,
+            'open_in': 'external',
+        },
+    },
 }
 
 # ---- Module-level cache ------------------------------------------------------

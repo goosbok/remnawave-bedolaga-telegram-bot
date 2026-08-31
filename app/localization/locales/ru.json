@@ -1362,6 +1362,8 @@
   "REFERRAL_REWARDS_HEADER": "🎁 <b>Как работают награды:</b>",
   "REFERRAL_REWARD_COMMISSION": "• Комиссия с каждого пополнения реферала: <b>{percent}%</b>",
   "REFERRAL_REWARD_COMMISSION_LIMITED": "• Комиссия с первых {max_payments} пополнений реферала: <b>{percent}%</b>",
+  "REFERRAL_REWARD_COMMISSION_FIRST_ONLY": "• Комиссия с первого платежа приглашённого: <b>{percent}%</b>",
+  "REFERRAL_REWARD_NEW_USER_NO_MINIMUM": "• Новый пользователь получает: <b>{bonus}</b> за первое пополнение",
   "REFERRAL_REWARD_INVITER": "• Вы получаете при первом пополнении реферала: <b>{bonus}</b>",
   "REFERRAL_REWARD_NEW_USER": "• Новый пользователь получает: <b>{bonus}</b> при первом пополнении от <b>{minimum}</b>",
   "REFERRAL_SHARE_BUTTON": "📤 Поделиться",

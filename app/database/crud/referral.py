@@ -51,13 +51,18 @@ async def create_referral_earning(
 
 
 async def get_commission_payment_count(db: AsyncSession, referrer_id: int, referral_id: int) -> int:
-    """Подсчитать количество комиссионных начислений реферера за платежи конкретного реферала."""
+    """Подсчитать количество комиссионных начислений реферера за платежи конкретного реферала.
+
+    Учитывается и начисление за первое пополнение (reason=referral_first_topup): комиссия сидит
+    внутри inviter_bonus, и без этого REFERRAL_MAX_COMMISSION_PAYMENTS=1 давал бы комиссию
+    с двух платежей вместо одного.
+    """
     result = await db.execute(
         select(func.count(ReferralEarning.id)).where(
             and_(
                 ReferralEarning.user_id == referrer_id,
                 ReferralEarning.referral_id == referral_id,
-                ReferralEarning.reason == 'referral_commission_topup',
+                ReferralEarning.reason.in_(('referral_commission_topup', 'referral_first_topup')),
             )
         )
     )

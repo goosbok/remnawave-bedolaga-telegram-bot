@@ -88,13 +88,20 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
     )
 
     if settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS > 0:
-        referral_text += '\n' + texts.t(
-            'REFERRAL_REWARD_NEW_USER',
-            '• Новый пользователь получает: <b>{bonus}</b> при первом пополнении от <b>{minimum}</b>',
-        ).format(
-            bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
-            minimum=texts.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS),
-        )
+        if settings.REFERRAL_MINIMUM_TOPUP_KOPEKS > 0:
+            new_user_line = texts.t(
+                'REFERRAL_REWARD_NEW_USER',
+                '• Новый пользователь получает: <b>{bonus}</b> при первом пополнении от <b>{minimum}</b>',
+            ).format(
+                bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS),
+                minimum=texts.format_price(settings.REFERRAL_MINIMUM_TOPUP_KOPEKS),
+            )
+        else:
+            new_user_line = texts.t(
+                'REFERRAL_REWARD_NEW_USER_NO_MINIMUM',
+                '• Новый пользователь получает: <b>{bonus}</b> за первое пополнение',
+            ).format(bonus=texts.format_price(settings.REFERRAL_FIRST_TOPUP_BONUS_KOPEKS))
+        referral_text += '\n' + new_user_line
 
     if settings.REFERRAL_INVITER_BONUS_KOPEKS > 0:
         referral_text += '\n' + texts.t(
@@ -102,7 +109,12 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
             '• Вы получаете при первом пополнении реферала: <b>{bonus}</b>',
         ).format(bonus=texts.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS))
 
-    if settings.REFERRAL_MAX_COMMISSION_PAYMENTS > 0:
+    if settings.REFERRAL_MAX_COMMISSION_PAYMENTS == 1:
+        commission_line = texts.t(
+            'REFERRAL_REWARD_COMMISSION_FIRST_ONLY',
+            '• Комиссия с первого платежа приглашённого: <b>{percent}%</b>',
+        ).format(percent=get_effective_referral_commission_percent(db_user))
+    elif settings.REFERRAL_MAX_COMMISSION_PAYMENTS > 0:
         commission_line = texts.t(
             'REFERRAL_REWARD_COMMISSION_LIMITED',
             '• Комиссия с первых {max_payments} пополнений реферала: <b>{percent}%</b>',

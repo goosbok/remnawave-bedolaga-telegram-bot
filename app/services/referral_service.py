@@ -439,7 +439,7 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                             f'🎁 Ваша награда: {settings.format_price(inviter_bonus)}'
                             f' ({bonus_breakdown})'
                         )
-                        if commission_percent > 0:
+                        if commission_percent > 0 and settings.REFERRAL_MAX_COMMISSION_PAYMENTS <= 0:
                             inviter_bonus_notification += (
                                 f'\n\n📈 Теперь с каждого его пополнения вы будете получать '
                                 f'{commission_percent}% комиссии.'

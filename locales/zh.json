@@ -1545,7 +1545,7 @@
 "WATA_STATUS_TITLE": "💳<b>WATA付款状态</b>",
 "WATA_STATUS_UNKNOWN": "未知",
 "WATA_TOPUP_PROMPT": "💳<b>通过WATA付款</b>\n\n请输入充值金额。最低金额—{min_amount}，最高—{max_amount}。\n付款通过WATA安全表单进行。",
-"WELCOME": "\n🎉<b>欢迎使用VPN服务！</b>\n\n我们的服务提供快速、安全的互联网访问，不受限制。\n\n🔐<b>优势：</b>\n•高速连接\n•服务器遍布不同国家\n•可靠的数据保护\n•24/7支持\n\n要开始使用，请选择您的界面语言：\n",
+"WELCOME": "\n🎉<b>欢迎使用VPN服务！</b>\n\n我们的服务提供快速、安全的互联网访问。\n\n🔐<b>优势：</b>\n•高速连接\n•服务器遍布不同国家\n•可靠的数据保护\n•24/7支持\n\n要开始使用，请选择您的界面语言：\n",
 "WELCOME_FALLBACK": "欢迎，{user_name}！",
 "YES": "✅是",
 "SIMPLE_SUBSCRIPTION_TRIAL_NOTICE_ACTIVE": "ℹ️您已有一个活跃的试用订阅。它还将生效{days}天。购买后，付费周期将添加到该期限中。",

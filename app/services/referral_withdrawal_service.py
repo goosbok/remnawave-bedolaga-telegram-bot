@@ -211,6 +211,15 @@ class ReferralWithdrawalService:
                 },
             )
 
+        if settings.REFERRAL_WITHDRAWAL_PARTNERS_ONLY:
+            user = await db.get(User, user_id)
+            if not user or not user.is_partner:
+                return (
+                    False,
+                    'Вывод доступен только партнёрам. Заявку на партнёрство можно подать в этом же разделе.',
+                    await self.get_referral_balance_stats(db, user_id),
+                )
+
         # Проверяем доступный баланс
         if stats is None:
             stats = await self.get_referral_balance_stats(db, user_id)

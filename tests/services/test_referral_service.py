@@ -117,3 +117,78 @@ async def test_first_topup_inviter_gets_fixed_plus_commission(monkeypatch):
 
     # With old max() logic, this would have been max(5000, 7500) = 7500 — wrong!
     assert expected_inviter_bonus == 12500
+async def _repeat_topup(monkeypatch, referrer, paid_count):
+    """Прогоняет повторное (не первое) пополнение реферала и возвращает моки начислений."""
+    user = SimpleNamespace(
+        id=1,
+        telegram_id=101,
+        full_name='Test User',
+        referred_by_id=2,
+        has_made_first_topup=True,
+    )
+
+    db = SimpleNamespace(
+        commit=AsyncMock(),
+        execute=AsyncMock(),
+    )
+
+    monkeypatch.setattr(referral_service, 'get_user_by_id', AsyncMock(side_effect=[user, referrer]))
+    add_user_balance_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(referral_service, 'add_user_balance', add_user_balance_mock)
+    create_referral_earning_mock = AsyncMock()
+    monkeypatch.setattr(referral_service, 'create_referral_earning', create_referral_earning_mock)
+    monkeypatch.setattr(referral_service, 'get_commission_payment_count', AsyncMock(return_value=paid_count))
+    monkeypatch.setattr(referral_service, 'get_user_campaign_id', AsyncMock(return_value=None))
+
+    monkeypatch.setattr(referral_service.settings, 'REFERRAL_MINIMUM_TOPUP_KOPEKS', 0)
+    monkeypatch.setattr(referral_service.settings, 'REFERRAL_INVITER_BONUS_KOPEKS', 0)
+    monkeypatch.setattr(referral_service.settings, 'REFERRAL_COMMISSION_PERCENT', 50)
+    monkeypatch.setattr(referral_service.settings, 'REFERRAL_MAX_COMMISSION_PAYMENTS', 1)
+
+    result = await referral_service.process_referral_topup(db, user.id, 100000)  # 1000 rub
+    return result, add_user_balance_mock, create_referral_earning_mock
+
+
+async def test_regular_referrer_stops_after_the_first_payment(monkeypatch):
+    """Обычный пригласивший получает комиссию только за первый платёж реферала."""
+    referrer = SimpleNamespace(
+        id=2,
+        telegram_id=202,
+        email=None,
+        full_name='Referrer',
+        referral_commission_percent=None,
+        is_partner=False,
+    )
+
+    result, add_user_balance_mock, create_referral_earning_mock = await _repeat_topup(
+        monkeypatch, referrer, paid_count=1
+    )
+
+    assert result is True
+    add_user_balance_mock.assert_not_awaited()
+    create_referral_earning_mock.assert_not_awaited()
+
+
+async def test_partner_keeps_earning_on_every_payment(monkeypatch):
+    """Партнёр получает свою ставку со всех оплат — общий лимит на него не действует."""
+    referrer = SimpleNamespace(
+        id=2,
+        telegram_id=202,
+        email=None,
+        full_name='Partner',
+        referral_commission_percent=20,
+        is_partner=True,
+    )
+
+    result, add_user_balance_mock, create_referral_earning_mock = await _repeat_topup(
+        monkeypatch, referrer, paid_count=7
+    )
+
+    assert result is True
+    add_user_balance_mock.assert_awaited_once()
+    assert add_user_balance_mock.await_args.args[1] is referrer
+    assert add_user_balance_mock.await_args.args[2] == 20000  # 20% от 1000 rub
+
+    create_referral_earning_mock.assert_awaited_once()
+    assert create_referral_earning_mock.await_args.kwargs['reason'] == 'referral_commission_topup'
+    assert create_referral_earning_mock.await_args.kwargs['amount_kopeks'] == 20000

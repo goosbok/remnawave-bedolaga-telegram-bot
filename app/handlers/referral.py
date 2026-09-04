@@ -22,6 +22,7 @@ from app.utils.photo_message import edit_or_answer_photo
 from app.utils.user_utils import (
     get_detailed_referral_list,
     get_effective_referral_commission_percent,
+    get_effective_referral_max_commission_payments,
     get_referral_analytics,
     get_user_referral_summary,
 )
@@ -109,18 +110,20 @@ async def show_referral_info(callback: types.CallbackQuery, db_user: User, db: A
             '• Вы получаете при первом пополнении реферала: <b>{bonus}</b>',
         ).format(bonus=texts.format_price(settings.REFERRAL_INVITER_BONUS_KOPEKS))
 
-    if settings.REFERRAL_MAX_COMMISSION_PAYMENTS == 1:
+    max_commission_payments = get_effective_referral_max_commission_payments(db_user)
+
+    if max_commission_payments == 1:
         commission_line = texts.t(
             'REFERRAL_REWARD_COMMISSION_FIRST_ONLY',
             '• Комиссия с первого платежа приглашённого: <b>{percent}%</b>',
         ).format(percent=get_effective_referral_commission_percent(db_user))
-    elif settings.REFERRAL_MAX_COMMISSION_PAYMENTS > 0:
+    elif max_commission_payments > 0:
         commission_line = texts.t(
             'REFERRAL_REWARD_COMMISSION_LIMITED',
             '• Комиссия с первых {max_payments} пополнений реферала: <b>{percent}%</b>',
         ).format(
             percent=get_effective_referral_commission_percent(db_user),
-            max_payments=settings.REFERRAL_MAX_COMMISSION_PAYMENTS,
+            max_payments=max_commission_payments,
         )
     else:
         commission_line = texts.t(

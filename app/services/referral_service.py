@@ -14,7 +14,10 @@ from app.database.models import ReferralEarning, TransactionType, User
 from app.services.notification_delivery_service import (
     notification_delivery_service,
 )
-from app.utils.user_utils import get_effective_referral_commission_percent
+from app.utils.user_utils import (
+    get_effective_referral_commission_percent,
+    get_effective_referral_max_commission_payments,
+)
 
 
 logger = structlog.get_logger(__name__)
@@ -99,18 +102,22 @@ async def clear_pending_referral(telegram_id: int) -> None:
         pass
 
 
-async def _is_commission_limit_reached(db: AsyncSession, referrer_id: int, referral_id: int) -> bool:
-    """Проверяет, исчерпан ли лимит комиссионных платежей для пары реферер-реферал."""
-    if settings.REFERRAL_MAX_COMMISSION_PAYMENTS <= 0:
+async def _is_commission_limit_reached(db: AsyncSession, referrer: User, referral_id: int) -> bool:
+    """Проверяет, исчерпан ли лимит комиссионных платежей для пары реферер-реферал.
+
+    Лимит берётся с учётом статуса реферера: у партнёров его нет.
+    """
+    max_payments = get_effective_referral_max_commission_payments(referrer)
+    if max_payments <= 0:
         return False
-    paid_count = await get_commission_payment_count(db, referrer_id, referral_id)
-    if paid_count >= settings.REFERRAL_MAX_COMMISSION_PAYMENTS:
+    paid_count = await get_commission_payment_count(db, referrer.id, referral_id)
+    if paid_count >= max_payments:
         logger.info(
             'Лимит комиссионных платежей исчерпан',
-            referrer_id=referrer_id,
+            referrer_id=referrer.id,
             referral_id=referral_id,
             paid_count=paid_count,
-            max_payments=settings.REFERRAL_MAX_COMMISSION_PAYMENTS,
+            max_payments=max_payments,
         )
         return True
     return False
@@ -285,7 +292,7 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                     topup_amount_kopeks=topup_amount_kopeks / 100,
                 )
 
-                if commission_amount > 0 and await _is_commission_limit_reached(db, referrer.id, user.id):
+                if commission_amount > 0 and await _is_commission_limit_reached(db, referrer, user.id):
                     return True
 
                 if commission_amount > 0:
@@ -439,7 +446,7 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                             f'🎁 Ваша награда: {settings.format_price(inviter_bonus)}'
                             f' ({bonus_breakdown})'
                         )
-                        if commission_percent > 0 and settings.REFERRAL_MAX_COMMISSION_PAYMENTS <= 0:
+                        if commission_percent > 0 and get_effective_referral_max_commission_payments(referrer) <= 0:
                             inviter_bonus_notification += (
                                 f'\n\n📈 Теперь с каждого его пополнения вы будете получать '
                                 f'{commission_percent}% комиссии.'
@@ -460,7 +467,7 @@ async def process_referral_topup(db: AsyncSession, user_id: int, topup_amount_ko
                     )
 
         elif commission_amount > 0:
-            if await _is_commission_limit_reached(db, referrer.id, user.id):
+            if await _is_commission_limit_reached(db, referrer, user.id):
                 return True
 
             balance_ok = await add_user_balance(

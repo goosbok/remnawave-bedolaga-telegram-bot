@@ -88,6 +88,19 @@ def get_effective_referral_commission_percent(user: User) -> int:
     return percent
 
 
+def get_effective_referral_max_commission_payments(user: User) -> int:
+    """Сколько платежей реферала приносят комиссию пригласившему. 0 — без ограничения.
+
+    Одобренные партнёры получают комиссию со всех оплат: их ставка задаётся индивидуально
+    при одобрении заявки, а ограничение общей программы (`REFERRAL_MAX_COMMISSION_PAYMENTS`)
+    на них не распространяется.
+    """
+
+    if getattr(user, 'is_partner', False):
+        return 0
+    return settings.REFERRAL_MAX_COMMISSION_PAYMENTS
+
+
 async def mark_user_as_had_paid_subscription(db: AsyncSession, user: User) -> bool:
     try:
         if user.has_had_paid_subscription:

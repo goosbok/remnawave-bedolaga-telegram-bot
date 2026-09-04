@@ -192,3 +192,36 @@ async def test_partner_keeps_earning_on_every_payment(monkeypatch):
     create_referral_earning_mock.assert_awaited_once()
     assert create_referral_earning_mock.await_args.kwargs['reason'] == 'referral_commission_topup'
     assert create_referral_earning_mock.await_args.kwargs['amount_kopeks'] == 20000
+def _partner(max_payments=None):
+    return SimpleNamespace(
+        id=2,
+        telegram_id=202,
+        email=None,
+        full_name='Partner',
+        referral_commission_percent=20,
+        referral_max_commission_payments=max_payments,
+        is_partner=True,
+    )
+
+
+async def test_personal_limit_stops_a_partner_at_its_value(monkeypatch):
+    """Персональный лимит партнёра сильнее его статуса: на N-й оплате начисления прекращаются."""
+    result, add_user_balance_mock, create_referral_earning_mock = await _repeat_topup(
+        monkeypatch, _partner(max_payments=3), paid_count=3
+    )
+
+    assert result is True
+    add_user_balance_mock.assert_not_awaited()
+    create_referral_earning_mock.assert_not_awaited()
+
+
+async def test_partner_still_earns_within_its_personal_limit(monkeypatch):
+    """Пока персональный лимит не исчерпан, партнёр получает свою ставку."""
+    result, add_user_balance_mock, create_referral_earning_mock = await _repeat_topup(
+        monkeypatch, _partner(max_payments=3), paid_count=2
+    )
+
+    assert result is True
+    add_user_balance_mock.assert_awaited_once()
+    assert add_user_balance_mock.await_args.args[2] == 20000  # 20% от 1000 rub
+    create_referral_earning_mock.assert_awaited_once()

@@ -72,6 +72,7 @@ class PartnerApplicationService:
         admin_id: int,
         commission_percent: int,
         comment: str | None = None,
+        max_commission_payments: int | None = None,
     ) -> tuple[bool, str]:
         """
         Одобряет заявку на партнёрство.
@@ -98,6 +99,7 @@ class PartnerApplicationService:
 
         user.partner_status = PartnerStatus.APPROVED.value
         user.referral_commission_percent = commission_percent
+        user.referral_max_commission_payments = max_commission_payments
 
         application.status = PartnerStatus.APPROVED.value
         application.approved_commission_percent = commission_percent
@@ -172,6 +174,7 @@ class PartnerApplicationService:
 
         user.partner_status = PartnerStatus.NONE.value
         user.referral_commission_percent = None
+        user.referral_max_commission_payments = None
 
         # Отвязываем все кампании от бывшего партнёра
         await db.execute(

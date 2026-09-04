@@ -91,11 +91,15 @@ def get_effective_referral_commission_percent(user: User) -> int:
 def get_effective_referral_max_commission_payments(user: User) -> int:
     """Сколько платежей реферала приносят комиссию пригласившему. 0 — без ограничения.
 
-    Одобренные партнёры получают комиссию со всех оплат: их ставка задаётся индивидуально
-    при одобрении заявки, а ограничение общей программы (`REFERRAL_MAX_COMMISSION_PAYMENTS`)
-    на них не распространяется.
+    Порядок: персональное значение (`users.referral_max_commission_payments`) → статус партнёра
+    → глобальный `REFERRAL_MAX_COMMISSION_PAYMENTS`. Одобренные партнёры без персонального
+    значения получают комиссию со всех оплат: их ставка задаётся индивидуально при одобрении
+    заявки, и ограничение общей программы на них не распространяется.
     """
 
+    personal = getattr(user, 'referral_max_commission_payments', None)
+    if personal is not None:
+        return max(0, personal)
     if getattr(user, 'is_partner', False):
         return 0
     return settings.REFERRAL_MAX_COMMISSION_PAYMENTS

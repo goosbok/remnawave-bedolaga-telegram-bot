@@ -15,6 +15,7 @@ from app.services.payment_search_service import (
     PeriodPreset,
     SearchParams,
     StatusFilter,
+    expand_date_to_end_of_day,
     search_payments,
     search_payments_stats,
 )
@@ -387,6 +388,10 @@ async def search_payments_endpoint(
     if date_to is not None and date_to.tzinfo is None:
         date_to = date_to.replace(tzinfo=UTC)
 
+    # A bare 'to' date parses to midnight; push it to the end of that day so
+    # the range actually covers the selected end day.
+    date_to = expand_date_to_end_of_day(date_to)
+
     # Clamp custom dates to safety limit
     min_allowed = datetime.now(UTC) - timedelta(days=MAX_ALL_TIME_DAYS)
     if date_from is not None and date_from < min_allowed:
@@ -454,6 +459,10 @@ async def search_payments_stats_endpoint(
         date_from = date_from.replace(tzinfo=UTC)
     if date_to is not None and date_to.tzinfo is None:
         date_to = date_to.replace(tzinfo=UTC)
+
+    # A bare 'to' date parses to midnight; push it to the end of that day so
+    # the range actually covers the selected end day.
+    date_to = expand_date_to_end_of_day(date_to)
 
     # Clamp custom dates to safety limit
     min_allowed = datetime.now(UTC) - timedelta(days=MAX_ALL_TIME_DAYS)

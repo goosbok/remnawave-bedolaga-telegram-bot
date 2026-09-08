@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 import structlog
@@ -60,6 +60,19 @@ MAX_PER_PAGE: int = 100
 def _escape_like(value: str) -> str:
     """Escape LIKE/ILIKE wildcard characters to prevent pattern injection."""
     return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
+def expand_date_to_end_of_day(date_to: datetime | None) -> datetime | None:
+    """Push a bare 'to' date to the end of that day.
+
+    The date picker sends plain dates ('YYYY-MM-DD'), which parse to midnight.
+    Used as-is with an inclusive `<=` filter, that excludes virtually every
+    payment made on the selected end day. Only bare-midnight values are
+    pushed forward -- an explicit time component is left untouched.
+    """
+    if date_to is not None and date_to.time() == time.min:
+        return date_to + timedelta(days=1) - timedelta(microseconds=1)
+    return date_to
 
 
 class StatusFilter(str, enum.Enum):

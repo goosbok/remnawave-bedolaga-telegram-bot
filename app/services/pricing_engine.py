@@ -648,15 +648,17 @@ class PricingEngine:
         if traffic_price > 0 and user:
             discounted_traffic, _, _ = self.calculate_traffic_discount(traffic_price, user)
 
-        base_group_disc = base_price - discounted_base
-        devices_group_disc = devices_price - discounted_devices
-        traffic_group_disc = traffic_price - discounted_traffic
-        total_group_discount = base_group_disc + devices_group_disc + traffic_group_disc
-
+        # Group discount vs personal promo-offer: combine per DISCOUNT_STACKING_MODE
+        # (default 'multiply' — offer on top of the group-discounted subtotal, unchanged
+        # legacy behavior; 'max' — take whichever discount saves more, never both).
+        raw_subtotal = base_price + devices_price + traffic_price
         subtotal = discounted_base + discounted_devices + discounted_traffic
-        after_offer = self.apply_discount(subtotal, offer_pct)
-        offer_discount = subtotal - after_offer
-        final_total = after_offer
+        final_total, total_group_discount, offer_discount = self._combine_group_and_offer(
+            raw_subtotal, subtotal, offer_pct
+        )
+        if offer_discount > 0 and total_group_discount == 0:
+            # Offer won outright (max mode) — group discount wasn't applied to any component.
+            discounted_base, discounted_devices, discounted_traffic = base_price, devices_price, traffic_price
 
         breakdown = dataclasses.asdict(
             TariffBreakdown(

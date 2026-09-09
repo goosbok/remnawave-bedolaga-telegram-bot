@@ -73,6 +73,57 @@ class TestStackedDiscounts:
         assert gd == 10000
         assert od == 0  # offer discount on 0 is 0
 
+    def test_default_mode_is_multiply(self, monkeypatch):
+        """No mode passed => reads settings.get_discount_stacking_mode(), default 'multiply'."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, 'DISCOUNT_STACKING_MODE', 'multiply', raising=False)
+        final, g_val, o_val = PricingEngine.apply_stacked_discounts(10000, 20, 10)
+        assert (final, g_val, o_val) == (7200, 2000, 800)
+
+
+class TestStackedDiscountsMaxMode:
+    def test_group_wins(self):
+        final, g_val, o_val = PricingEngine.apply_stacked_discounts(10000, 20, 10, mode='max')
+        assert final == 8000
+        assert g_val == 2000
+        assert o_val == 0
+
+    def test_offer_wins(self):
+        final, g_val, o_val = PricingEngine.apply_stacked_discounts(10000, 10, 20, mode='max')
+        assert final == 8000
+        assert g_val == 0
+        assert o_val == 2000
+
+    def test_tie_offer_wins(self):
+        """On a tie the offer wins, so it still gets marked as consumed by callers."""
+        final, g_val, o_val = PricingEngine.apply_stacked_discounts(10000, 20, 20, mode='max')
+        assert final == 8000
+        assert g_val == 0
+        assert o_val == 2000
+
+    def test_only_group_unaffected_by_mode(self):
+        final, g_val, o_val = PricingEngine.apply_stacked_discounts(10000, 20, 0, mode='max')
+        assert final == 8000
+        assert g_val == 2000
+        assert o_val == 0
+
+    def test_only_offer_unaffected_by_mode(self):
+        final, g_val, o_val = PricingEngine.apply_stacked_discounts(10000, 0, 15, mode='max')
+        assert final == 8500
+        assert g_val == 0
+        assert o_val == 1500
+
+    def test_explicit_mode_overrides_settings(self, monkeypatch):
+        """Passing mode= directly must win over whatever settings says."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, 'DISCOUNT_STACKING_MODE', 'multiply', raising=False)
+        final, g_val, o_val = PricingEngine.apply_stacked_discounts(10000, 20, 10, mode='max')
+        assert final == 8000  # NOT 7200 (multiply result) — explicit mode wins
+        assert g_val == 2000
+        assert o_val == 0
+
 
 from unittest.mock import AsyncMock, MagicMock, patch
 

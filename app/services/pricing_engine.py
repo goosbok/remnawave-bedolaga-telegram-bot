@@ -110,18 +110,53 @@ class PricingEngine:
         return amount_kopeks - discount
 
     @staticmethod
+    def _combine_group_and_offer(
+        raw_amount: int,
+        group_discounted_amount: int,
+        offer_percent: int,
+        mode: str | None = None,
+    ) -> tuple[int, int, int]:
+        """Combine a promo-group discount with a personal promo-offer discount.
+
+        Strategy is controlled by DISCOUNT_STACKING_MODE (settings.get_discount_stacking_mode()
+        when `mode` is not passed explicitly):
+        - 'multiply' (default, legacy): stack sequentially — offer applies on top
+          of the already group-discounted amount.
+        - 'max': take whichever discount saves the customer more; apply only that
+          one, never both. On a tie the offer wins (so it still gets marked as
+          consumed by callers).
+
+        Returns (final_amount, group_discount_value, offer_discount_value) — in
+        'max' mode exactly one of the two discount_value fields is non-zero.
+        """
+        if mode is None:
+            mode = settings.get_discount_stacking_mode()
+
+        group_discount_value = raw_amount - group_discounted_amount
+
+        if mode == 'max':
+            after_offer_only = PricingEngine.apply_discount(raw_amount, offer_percent)
+            offer_discount_value = raw_amount - after_offer_only
+            if offer_discount_value >= group_discount_value:
+                return after_offer_only, 0, offer_discount_value
+            return group_discounted_amount, group_discount_value, 0
+
+        # 'multiply' (default / legacy)
+        after_offer = PricingEngine.apply_discount(group_discounted_amount, offer_percent)
+        offer_discount_value = group_discounted_amount - after_offer
+        return after_offer, group_discount_value, offer_discount_value
+
+    @staticmethod
     def apply_stacked_discounts(
         amount: int,
         group_percent: int,
         offer_percent: int,
+        mode: str | None = None,
     ) -> tuple[int, int, int]:
-        """Apply promo-group discount, then promo-offer discount sequentially.
+        """Apply promo-group discount, then combine with promo-offer per DISCOUNT_STACKING_MODE.
         Returns (final_amount, group_discount_value, offer_discount_value)."""
         after_group = PricingEngine.apply_discount(amount, group_percent)
-        group_discount_value = amount - after_group
-        after_offer = PricingEngine.apply_discount(after_group, offer_percent)
-        offer_discount_value = after_group - after_offer
-        return after_offer, group_discount_value, offer_discount_value
+        return PricingEngine._combine_group_and_offer(amount, after_group, offer_percent, mode)
 
     @staticmethod
     def resolve_promo_group(user: User | None):

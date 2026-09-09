@@ -208,6 +208,7 @@ class Settings(BaseSettings):
     # - classic: классический режим (выбор серверов, трафика, устройств, периода отдельно)
     # - tariffs: режим тарифов (готовые пакеты с фиксированными параметрами)
     SALES_MODE: str = 'tariffs'
+    DISCOUNT_STACKING_MODE: str = 'multiply'
 
     # Multi-tariff mode: allows users to purchase multiple tariffs simultaneously
     # Only works when SALES_MODE='tariffs'
@@ -1705,6 +1706,21 @@ class Settings(BaseSettings):
     def get_sales_mode(self) -> str:
         """Возвращает текущий режим продаж."""
         return self.SALES_MODE if self.SALES_MODE in ('classic', 'tariffs') else 'tariffs'
+
+    def get_discount_stacking_mode(self) -> str:
+        """Стратегия совмещения групповой скидки (промогруппа) и персонального промо-офера.
+
+        'multiply' (default): stack sequentially — offer applies on top of the
+        already group-discounted amount (today's behavior, e.g. two 25% discounts
+        become 43.75% off, not 50%).
+        'max': take whichever discount saves the customer more; apply only that
+        one, never both.
+        """
+        return self.DISCOUNT_STACKING_MODE if self.DISCOUNT_STACKING_MODE in ('multiply', 'max') else 'multiply'
+
+    def is_discount_stacking_max(self) -> bool:
+        """True если активна стратегия 'взять большую скидку' вместо перемножения."""
+        return self.get_discount_stacking_mode() == 'max'
 
     def get_trial_tariff_id(self) -> int:
         """Возвращает ID тарифа для триала (0 = использовать стандартные настройки)."""

@@ -726,6 +726,44 @@ class TestCalculateRenewalPriceClassicMode:
         assert result.promo_offer_discount == 800
 
     @pytest.mark.asyncio
+    async def test_classic_with_discounts_max_mode(self):
+        """Same inputs as test_classic_with_discounts (group 20% / offer 10% on base 10000),
+        but in max mode: group (2000) beats offer (10% of raw 10000 = 1000) — offer unused."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = None
+        subscription.tariff = None
+        subscription.connected_squads = []
+        subscription.traffic_limit_gb = 0
+        subscription.purchased_traffic_gb = 0
+        subscription.device_limit = 2
+        promo_group = MagicMock()
+        promo_group.id = 1
+        promo_group.get_discount_percent.return_value = 20
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        user.promo_group_id = 1
+        user.promo_offer_discount_percent = 10
+        user.promo_offer_expires_at = None
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=10),
+            patch('app.services.pricing_engine.settings') as ms,
+            patch('app.services.pricing_engine.CLASSIC_PERIOD_PRICES', {30: 10000}),
+            patch('app.services.pricing_engine.PERIOD_PRICES', {30: 10000}),
+        ):
+            ms.get_traffic_price.return_value = 0
+            ms.PRICE_PER_DEVICE = 0
+            ms.DEFAULT_DEVICE_LIMIT = 2
+            ms.is_traffic_fixed.return_value = False
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 30, user=user)
+        assert result.final_total == 8000
+        assert result.promo_group_discount == 2000
+        assert result.promo_offer_discount == 0
+
+    @pytest.mark.asyncio
     async def test_classic_fallback_to_period_prices(self):
         """When CLASSIC_PERIOD_PRICES has no entry, falls back to PERIOD_PRICES."""
         engine = PricingEngine()

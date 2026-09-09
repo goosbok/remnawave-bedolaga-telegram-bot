@@ -808,19 +808,25 @@ class PricingEngine:
         # --- Subtotal (category discounts already applied) ---
         subtotal = base_price + servers_price + traffic_price + devices_price
 
-        # --- Promo offer discount on entire subtotal ---
-        after_offer = self.apply_discount(subtotal, offer_pct)
-        promo_offer_discount = subtotal - after_offer
-        final_total = after_offer
-
-        # Total group discount = sum of per-category discounts
-        base_group_discount = base_price_original - base_price
-        servers_group_discount = (servers_price_per_month - discounted_servers_per_month) * months
-        traffic_group_discount = (traffic_price_per_month - discounted_traffic_per_month) * months
-        devices_group_discount = (devices_price_per_month - discounted_devices_per_month) * months
-        total_group_discount = (
-            base_group_discount + servers_group_discount + traffic_group_discount + devices_group_discount
+        # Group discount vs personal promo-offer: combine per DISCOUNT_STACKING_MODE
+        # (default 'multiply' — offer on top of the group-discounted subtotal, unchanged
+        # legacy behavior; 'max' — take whichever discount saves more, never both).
+        raw_subtotal = (
+            base_price_original
+            + servers_price_per_month * months
+            + traffic_price_per_month * months
+            + devices_price_per_month * months
         )
+        final_total, total_group_discount, promo_offer_discount, offer_won = self._combine_group_and_offer(
+            raw_subtotal, subtotal, offer_pct
+        )
+        if offer_won:
+            # Offer applied instead of the group discount — reset components to raw
+            # (the group discount was never applied to any of them).
+            base_price = base_price_original
+            servers_price = servers_price_per_month * months
+            traffic_price = traffic_price_per_month * months
+            devices_price = devices_price_per_month * months
 
         valid_servers = [d for d in server_details if d.get('id') is not None]
         breakdown = dataclasses.asdict(

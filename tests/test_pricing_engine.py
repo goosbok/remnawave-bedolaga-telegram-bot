@@ -764,6 +764,56 @@ class TestCalculateRenewalPriceClassicMode:
         assert result.promo_offer_discount == 0
 
     @pytest.mark.asyncio
+    async def test_classic_with_discounts_max_mode_offer_wins(self):
+        """Offer wins outright (max mode) with non-zero servers/traffic/devices components —
+        confirms ALL FOUR components (not just base_price) reset to raw, undiscounted values.
+        This is the exact scenario the reset logic exists for; a partial reset (e.g. forgetting
+        devices_price or dropping the *months multiplier on servers/traffic) would silently
+        undercharge or overcharge part of the bill without this test catching it."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = None
+        subscription.tariff = None
+        subscription.connected_squads = ['uuid-1']
+        subscription.traffic_limit_gb = 50
+        subscription.purchased_traffic_gb = 0
+        subscription.device_limit = 4  # 2 extra devices beyond DEFAULT_DEVICE_LIMIT=2
+        promo_group = MagicMock()
+        promo_group.id = 1
+        promo_group.get_discount_percent.return_value = 10
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        user.promo_group_id = 1
+        user.promo_offer_discount_percent = 30
+        user.promo_offer_expires_at = None
+        server = _make_server(price_kopeks=5000, squad_uuid='uuid-1')
+        with (
+            patch('app.services.pricing_engine.get_server_squads_by_uuids', return_value=[server]),
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=30),
+            patch('app.services.pricing_engine.settings') as ms,
+            patch('app.services.pricing_engine.CLASSIC_PERIOD_PRICES', {30: 10000}),
+            patch('app.services.pricing_engine.PERIOD_PRICES', {30: 10000}),
+        ):
+            ms.get_traffic_price.return_value = 3000
+            ms.PRICE_PER_DEVICE = 1000
+            ms.DEFAULT_DEVICE_LIMIT = 2
+            ms.is_traffic_fixed.return_value = False
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 30, user=user)
+        # raw components (1 month): base 10000, servers 5000, traffic 3000, devices 2*1000=2000.
+        # raw_subtotal = 20000. group 10% on the discounted subtotal (18000) -> group_discount_value=2000.
+        # offer 30% of raw 20000 = 6000. 6000 >= 2000 -> offer wins, all four reset to raw.
+        assert result.base_price == 10000
+        assert result.servers_price == 5000
+        assert result.traffic_price == 3000
+        assert result.devices_price == 2000
+        assert result.promo_group_discount == 0
+        assert result.promo_offer_discount == 6000
+        assert result.final_total == 14000
+
+    @pytest.mark.asyncio
     async def test_classic_fallback_to_period_prices(self):
         """When CLASSIC_PERIOD_PRICES has no entry, falls back to PERIOD_PRICES."""
         engine = PricingEngine()

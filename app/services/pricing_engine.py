@@ -115,7 +115,7 @@ class PricingEngine:
         group_discounted_amount: int,
         offer_percent: int,
         mode: str | None = None,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, bool]:
         """Combine a promo-group discount with a personal promo-offer discount.
 
         Strategy is controlled by DISCOUNT_STACKING_MODE (settings.get_discount_stacking_mode()
@@ -126,8 +126,12 @@ class PricingEngine:
           one, never both. On a tie the offer wins (so it still gets marked as
           consumed by callers).
 
-        Returns (final_amount, group_discount_value, offer_discount_value) — in
-        'max' mode exactly one of the two discount_value fields is non-zero.
+        Returns (final_amount, group_discount_value, offer_discount_value, offer_won).
+        `offer_won` is True only when the offer discount was applied INSTEAD of the
+        group discount (i.e. the group discount was not applied to any component,
+        and callers with per-component prices must reset them to their raw values).
+        In 'multiply' mode `offer_won` is always False — both discounts are always
+        applied together, there is no single winner.
         """
         if mode is None:
             mode = settings.get_discount_stacking_mode()
@@ -138,13 +142,13 @@ class PricingEngine:
             after_offer_only = PricingEngine.apply_discount(raw_amount, offer_percent)
             offer_discount_value = raw_amount - after_offer_only
             if offer_discount_value >= group_discount_value:
-                return after_offer_only, 0, offer_discount_value
-            return group_discounted_amount, group_discount_value, 0
+                return after_offer_only, 0, offer_discount_value, True
+            return group_discounted_amount, group_discount_value, 0, False
 
-        # 'multiply' (default / legacy)
+        # 'multiply' (default / legacy) — both always apply together, no winner
         after_offer = PricingEngine.apply_discount(group_discounted_amount, offer_percent)
         offer_discount_value = group_discounted_amount - after_offer
-        return after_offer, group_discount_value, offer_discount_value
+        return after_offer, group_discount_value, offer_discount_value, False
 
     @staticmethod
     def apply_stacked_discounts(
@@ -156,7 +160,10 @@ class PricingEngine:
         """Apply promo-group discount, then combine with promo-offer per DISCOUNT_STACKING_MODE.
         Returns (final_amount, group_discount_value, offer_discount_value)."""
         after_group = PricingEngine.apply_discount(amount, group_percent)
-        return PricingEngine._combine_group_and_offer(amount, after_group, offer_percent, mode)
+        final, group_val, offer_val, _offer_won = PricingEngine._combine_group_and_offer(
+            amount, after_group, offer_percent, mode
+        )
+        return final, group_val, offer_val
 
     @staticmethod
     def resolve_promo_group(user: User | None):
@@ -653,11 +660,12 @@ class PricingEngine:
         # legacy behavior; 'max' — take whichever discount saves more, never both).
         raw_subtotal = base_price + devices_price + traffic_price
         subtotal = discounted_base + discounted_devices + discounted_traffic
-        final_total, total_group_discount, offer_discount = self._combine_group_and_offer(
+        final_total, total_group_discount, offer_discount, offer_won = self._combine_group_and_offer(
             raw_subtotal, subtotal, offer_pct
         )
-        if offer_discount > 0 and total_group_discount == 0:
-            # Offer won outright (max mode) — group discount wasn't applied to any component.
+        if offer_won:
+            # Offer applied instead of the group discount — reset components to raw
+            # (the group discount was never applied to any of them).
             discounted_base, discounted_devices, discounted_traffic = base_price, devices_price, traffic_price
 
         breakdown = dataclasses.asdict(

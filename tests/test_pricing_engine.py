@@ -509,6 +509,76 @@ class TestCalculateRenewalPriceTariffMode:
         assert result.final_total == 15000
 
     @pytest.mark.asyncio
+    async def test_tariff_with_discounts_max_mode_group_wins_with_devices(self):
+        """Same as group_wins, but with a non-zero devices component — confirms devices_price
+        is NOT reset when the group discount wins (it correctly stays group-discounted)."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 1
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 20000}
+        subscription.tariff.device_limit = 1
+        subscription.tariff.device_price_kopeks = 1000
+        subscription.tariff.id = 1
+        subscription.device_limit = 3  # 2 extra devices
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 10
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=5),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000  # should NOT be used — tariff.device_price_kopeks wins
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 30, user=user)
+        # raw: base 20000 + devices 2*1000=2000 = 22000. group 10%: base->18000, devices->1800.
+        # group_discount_value = 2200. offer 5% of raw 22000 = 1100. 1100 < 2200 -> group wins.
+        assert result.base_price == 18000
+        assert result.devices_price == 1800  # group-discounted, NOT reset
+        assert result.promo_group_discount == 2200
+        assert result.promo_offer_discount == 0
+        assert result.final_total == 19800
+
+    @pytest.mark.asyncio
+    async def test_tariff_with_discounts_max_mode_offer_wins_with_devices(self):
+        """Same as offer_wins, but with a non-zero devices component — confirms devices_price
+        IS reset to raw when the offer wins (this is the exact regression the code-quality
+        review flagged: a partial reset that only touched base_price would silently
+        undercharge or overcharge the devices portion)."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 1
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 20000}
+        subscription.tariff.device_limit = 1
+        subscription.tariff.device_price_kopeks = 1000
+        subscription.tariff.id = 1
+        subscription.device_limit = 3  # 2 extra devices
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 10
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=30),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000  # should NOT be used — tariff.device_price_kopeks wins
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 30, user=user)
+        # raw: base 20000 + devices 2000 = 22000. offer 30% of raw 22000 = 6600.
+        # group_discount_value = 2200 (see group-wins case above). 6600 >= 2200 -> offer wins.
+        assert result.base_price == 20000  # reset to raw
+        assert result.devices_price == 2000  # reset to raw — this is what the review flagged as untested
+        assert result.promo_group_discount == 0
+        assert result.promo_offer_discount == 6600
+        assert result.final_total == 15400
+
+    @pytest.mark.asyncio
     async def test_tariff_missing_period_returns_zero_base(self):
         engine = PricingEngine()
         db = AsyncMock()

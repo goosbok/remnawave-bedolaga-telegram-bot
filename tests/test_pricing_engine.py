@@ -921,6 +921,7 @@ class TestCalculateRenewalPriceTariffMode:
         assert result.breakdown['group_discount_pct']['period'] == 0
         assert result.breakdown['tariff_period_discount_pct'] == 20  # informational, unaffected by who won
         assert result.promo_offer_discount == 420000 - 168000
+        assert result.base_price == 336000  # tariff's own advertised price, NOT the inflated nominal (420000)
 
     @pytest.mark.asyncio
     async def test_tariff_own_discount_wins_when_user_has_no_promo_group(self):

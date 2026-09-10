@@ -726,7 +726,14 @@ class PricingEngine:
         if offer_won:
             # Offer applied instead of any other discount — reset components AND their
             # percentages to raw/zero (no other discount was applied to any of them).
-            discounted_base, discounted_devices, discounted_traffic = raw_base, devices_price, traffic_price
+            # Note: discounted_base resets to base_price (the tariff's OWN advertised
+            # period price), not raw_base/nominal_base — nominal_base is only the
+            # internal reference used to decide which discount is biggest; it is not
+            # a real price the tariff ever advertises, and showing it in a "period
+            # price" preview line would be misleading (the actual amount charged,
+            # final_total, is unaffected by this either way — this only changes what
+            # RenewalPricing.base_price reports for display purposes).
+            discounted_base, discounted_devices, discounted_traffic = base_price, devices_price, traffic_price
             period_pct = devices_pct = 0
         elif base_source == 'tariff':
             # The tariff's own built-in discount was cheaper than the group's — use it,

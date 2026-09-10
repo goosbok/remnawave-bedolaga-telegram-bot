@@ -1,3 +1,4 @@
+import math
 from datetime import UTC, datetime
 
 import structlog
@@ -407,8 +408,14 @@ def _build_cabinet_main_menu_keyboard(
                 resolved = global_style or _resolve_style(CALLBACK_TO_CABINET_STYLE.get(callback_fallback))
             resolved_emoji = icon_custom_emoji_id or section_cfg.get('icon_custom_emoji_id') or None
 
+            # При наличии custom emoji стрипаем ведущий юникод-emoji из текста —
+            # иначе Telegram нарисует обе иконки.
+            from app.utils.miniapp_buttons import strip_leading_emoji
+
+            final_text = strip_leading_emoji(text) if resolved_emoji else text
+
             return InlineKeyboardButton(
-                text=text,
+                text=final_text,
                 web_app=types.WebAppInfo(url=url),
                 style=resolved,
                 icon_custom_emoji_id=resolved_emoji or None,
@@ -442,6 +449,10 @@ def _build_cabinet_main_menu_keyboard(
                 )
                 resolved_style = _resolve_style(custom_cfg.get('style'))
                 resolved_emoji = custom_cfg.get('icon_custom_emoji_id') or None
+                if resolved_emoji:
+                    from app.utils.miniapp_buttons import strip_leading_emoji
+
+                    custom_text = strip_leading_emoji(custom_text)
                 open_in = custom_cfg.get('open_in', 'external')
                 link_kwarg = (
                     {'web_app': types.WebAppInfo(url=custom_cfg['url'])}
@@ -516,10 +527,16 @@ def _build_cabinet_main_menu_keyboard(
                         continue
                     lang_text = section_cfg.get('labels', {}).get(language, '') or texts.MENU_LANGUAGE
                     resolved_lang_emoji = section_cfg.get('icon_custom_emoji_id') or None
+                    resolved_lang_style = _resolve_style(section_cfg.get('style'))
+                    if resolved_lang_emoji:
+                        from app.utils.miniapp_buttons import strip_leading_emoji
+
+                        lang_text = strip_leading_emoji(lang_text)
                     row_buttons.append(
                         InlineKeyboardButton(
                             text=lang_text,
                             callback_data='menu_language',
+                            style=resolved_lang_style,
                             icon_custom_emoji_id=resolved_lang_emoji,
                         )
                     )
@@ -527,7 +544,12 @@ def _build_cabinet_main_menu_keyboard(
                 case 'admin':
                     if not is_admin:
                         continue
-                    admin_row = [InlineKeyboardButton(text=texts.MENU_ADMIN, callback_data='admin_panel')]
+                    admin_callback_style = _resolve_style(section_cfg.get('style'))
+                    admin_row = [
+                        InlineKeyboardButton(
+                            text=texts.MENU_ADMIN, callback_data='admin_panel', style=admin_callback_style
+                        )
+                    ]
                     if section_cfg.get('enabled', True):
                         admin_web_text = section_cfg.get('labels', {}).get(language, '') or '🖥 Веб-Админка'
                         admin_row.append(_cabinet_button(admin_web_text, '/admin', 'admin_panel'))
@@ -682,7 +704,12 @@ def get_main_menu_keyboard(
 
     keyboard.append([InlineKeyboardButton(text=balance_button_text, callback_data='menu_balance')])
 
-    show_trial = not has_had_paid_subscription and not has_active_subscription
+    show_trial = (
+        not has_had_paid_subscription
+        and not has_active_subscription
+        and settings.TRIAL_DURATION_DAYS > 0
+        and settings.TRIAL_DISABLED_FOR != 'all'
+    )
 
     show_buy = not has_active_subscription or not subscription_is_active
     current_subscription = subscription
@@ -756,7 +783,7 @@ def get_main_menu_keyboard(
         paired_buttons.append(
             InlineKeyboardButton(
                 text=texts.t('MENU_INFO', 'ℹ️ Инфо'),
-                callback_data=menu_info,
+                callback_data='menu_info',
             )
         )
 
@@ -789,6 +816,8 @@ def get_info_menu_keyboard(
     show_public_offer: bool = False,
     show_faq: bool = False,
     show_promo_groups: bool = False,
+    show_rules: bool = True,
+    custom_pages: list[tuple[int, str]] | None = None,
 ) -> InlineKeyboardMarkup:
     texts = get_texts(language)
 
@@ -834,7 +863,18 @@ def get_info_menu_keyboard(
             ]
         )
 
-    buttons.append([InlineKeyboardButton(text=texts.MENU_RULES, callback_data='menu_rules')])
+    if show_rules:
+        buttons.append([InlineKeyboardButton(text=texts.MENU_RULES, callback_data='menu_rules')])
+
+    for page_id, page_title in custom_pages or []:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=page_title,
+                    callback_data=f'info_page:{page_id}:1',
+                )
+            ]
+        )
 
     server_status_mode = settings.get_server_status_mode()
     server_status_text = texts.t('MENU_SERVER_STATUS', '📊 Статус серверов')
@@ -1043,7 +1083,8 @@ def get_insufficient_balance_keyboard(
     language: str = DEFAULT_LANGUAGE,
     resume_callback: str | None = None,
     amount_kopeks: int | None = None,
-    has_saved_cart: bool = False,  # Новый параметр для указания наличия сохраненной корзины
+    has_saved_cart: bool = False,
+    resume_text: str | None = None,
 ) -> InlineKeyboardMarkup:
     texts = get_texts(language)
     keyboard = get_payment_methods_keyboard(amount_kopeks or 0, language)
@@ -1063,12 +1104,13 @@ def get_insufficient_balance_keyboard(
             )
             back_row_index = len(keyboard.inline_keyboard) - 1
 
-    # Если есть сохраненная корзина, добавляем кнопку возврата к оформлению
+    # Если есть сохраненная корзина или передан resume_callback, добавляем кнопку возврата
+    button_label = resume_text or texts.RETURN_TO_SUBSCRIPTION_CHECKOUT
     if has_saved_cart:
         return_row = [
             InlineKeyboardButton(
-                text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT,
-                callback_data='return_to_saved_cart',
+                text=button_label,
+                callback_data=resume_callback or 'return_to_saved_cart',
             )
         ]
         insert_index = back_row_index if back_row_index is not None else len(keyboard.inline_keyboard)
@@ -1076,7 +1118,7 @@ def get_insufficient_balance_keyboard(
     elif resume_callback:
         return_row = [
             InlineKeyboardButton(
-                text=texts.RETURN_TO_SUBSCRIPTION_CHECKOUT,
+                text=button_label,
                 callback_data=resume_callback,
             )
         ]
@@ -1087,7 +1129,11 @@ def get_insufficient_balance_keyboard(
 
 
 def get_subscription_keyboard(
-    language: str = DEFAULT_LANGUAGE, has_subscription: bool = False, is_trial: bool = False, subscription=None
+    language: str = DEFAULT_LANGUAGE,
+    has_subscription: bool = False,
+    is_trial: bool = False,
+    subscription=None,
+    gift_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     from app.config import settings
 
@@ -1228,13 +1274,29 @@ def get_subscription_keyboard(
                 )
             ]
             if settings.is_tariffs_mode() and subscription:
-                # Для суточных тарифов переходим на список тарифов, для обычных - мгновенное переключение
-                tariff_callback = 'tariff_switch' if is_daily_tariff else 'instant_switch'
-                settings_row.append(
-                    InlineKeyboardButton(
-                        text=texts.t('CHANGE_TARIFF_BUTTON', '📦 Тариф'), callback_data=tariff_callback
+                # На истёкшей/отключённой подписке смена тарифа недоступна (хендлер её
+                # блокирует) — раньше кнопка «Тариф» всё равно показывалась и вела в тупик.
+                # Теперь для таких подписок показываем «Купить тариф» (покупку с нуля).
+                if getattr(subscription, 'actual_status', None) in ('expired', 'disabled'):
+                    settings_row.append(
+                        InlineKeyboardButton(
+                            text=texts.t('BUY_TARIFF_BUTTON', '📦 Купить тариф'), callback_data='menu_buy'
+                        )
                     )
-                )
+                else:
+                    # Для суточных тарифов переходим на список тарифов, для обычных - мгновенное переключение.
+                    # Бесплатный (0₽) тариф — тоже через список с выбором периода: prorated
+                    # instant-switch посчитал бы доплату за весь остаток бесплатных дней
+                    # и перенёс бы их на платный тариф вопреки TARIFF_SWITCH_RESET_FREE_DAYS.
+                    is_free_tariff = bool(
+                        tariff and getattr(tariff, 'is_free', False) and settings.TARIFF_SWITCH_RESET_FREE_DAYS
+                    )
+                    tariff_callback = 'tariff_switch' if (is_daily_tariff or is_free_tariff) else 'instant_switch'
+                    settings_row.append(
+                        InlineKeyboardButton(
+                            text=texts.t('CHANGE_TARIFF_BUTTON', '📦 Тариф'), callback_data=tariff_callback
+                        )
+                    )
             keyboard.append(settings_row)
 
             # Кнопка докупки трафика для платных подписок
@@ -1254,6 +1316,16 @@ def get_subscription_keyboard(
                         )
                     ]
                 )
+
+    if gift_enabled:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('GIFT_SUBSCRIPTION_BUTTON', '🎁 Подарить подписку'),
+                    callback_data='subscription_gift',
+                )
+            ]
+        )
 
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
 
@@ -1302,12 +1374,16 @@ def get_subscription_confirm_keyboard_with_cart(language: str = 'ru') -> InlineK
 def get_insufficient_balance_keyboard_with_cart(
     language: str = 'ru',
     amount_kopeks: int = 0,
+    resume_callback: str | None = None,
+    resume_text: str | None = None,
 ) -> InlineKeyboardMarkup:
     # Используем обновленную версию с флагом has_saved_cart=True
     keyboard = get_insufficient_balance_keyboard(
         language,
         amount_kopeks=amount_kopeks,
         has_saved_cart=True,
+        resume_callback=resume_callback,
+        resume_text=resume_text,
     )
 
     # Добавляем кнопку очистки корзины в начало
@@ -1565,6 +1641,32 @@ def get_balance_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMark
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def _apply_payment_name_overrides(keyboard: list[list[InlineKeyboardButton]]) -> None:
+    """Replace payment-method button labels with cabinet-set display names.
+
+    Bot keyboards build labels from locale strings / ``*_DISPLAY_NAME`` settings,
+    which ignore the per-method overrides operators set in the cabinet
+    (``PaymentMethodConfig.display_name``). Here we decode the method_id from each
+    ``topup_*`` callback and, when an override exists, show it — so bot button
+    labels stay in sync with the cabinet. No override -> the original label is kept.
+    """
+    from app.services.payment_method_config_service import get_display_name_override
+
+    for row in keyboard:
+        for idx, button in enumerate(row):
+            data = button.callback_data or ''
+            if data.startswith('topup_amount|'):
+                parts = data.split('|')
+                method = parts[1] if len(parts) > 1 else ''
+            elif data.startswith('topup_'):
+                method = data[len('topup_') :]
+            else:
+                continue
+            override = get_display_name_override(method) if method else None
+            if override:
+                row[idx] = button.model_copy(update={'text': override})
 
 
 def get_payment_methods_keyboard(amount_kopeks: int, language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
@@ -1831,6 +1933,402 @@ def get_payment_methods_keyboard(amount_kopeks: int, language: str = DEFAULT_LAN
         )
         has_direct_payment_methods = True
 
+    if settings.is_paypear_enabled():
+        paypear_name = settings.get_paypear_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_PAYPEAR', f'💳 Оплата ({paypear_name})'),
+                    callback_data=_build_callback('paypear'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_rollypay_enabled():
+        rollypay_name = settings.get_rollypay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ROLLYPAY', f'💳 {rollypay_name}'),
+                    callback_data=_build_callback('rollypay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_overpay_enabled():
+        overpay_name = settings.get_overpay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_OVERPAY', f'💳 {overpay_name}'),
+                    callback_data=_build_callback('overpay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_aurapay_sbp_enabled():
+        sbp_name = settings.get_aurapay_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_AURAPAY_SBP', f'📱 {sbp_name}'),
+                    callback_data=_build_callback('aurapay_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_aurapay_card_enabled():
+        card_name = settings.get_aurapay_card_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_AURAPAY_CARD', f'💳 {card_name}'),
+                    callback_data=_build_callback('aurapay_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if (
+        settings.is_aurapay_enabled()
+        and not settings.is_aurapay_sbp_enabled()
+        and not settings.is_aurapay_card_enabled()
+    ):
+        aurapay_name = settings.get_aurapay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_AURAPAY', f'💳 {aurapay_name}'),
+                    callback_data=_build_callback('aurapay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_etoplatezhi_sbp_enabled():
+        sbp_name = settings.get_etoplatezhi_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ETOPLATEZHI_SBP', f'📱 {sbp_name}'),
+                    callback_data=_build_callback('etoplatezhi_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_etoplatezhi_card_enabled():
+        card_name = settings.get_etoplatezhi_card_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ETOPLATEZHI_CARD', f'💳 {card_name}'),
+                    callback_data=_build_callback('etoplatezhi_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if (
+        settings.is_etoplatezhi_enabled()
+        and not settings.is_etoplatezhi_sbp_enabled()
+        and not settings.is_etoplatezhi_card_enabled()
+    ):
+        etoplatezhi_name = settings.get_etoplatezhi_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ETOPLATEZHI', f'💳 {etoplatezhi_name}'),
+                    callback_data=_build_callback('etoplatezhi'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_antilopay_sbp_enabled():
+        sbp_name = settings.get_antilopay_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ANTILOPAY_SBP', f'📱 {sbp_name}'),
+                    callback_data=_build_callback('antilopay_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_antilopay_card_enabled():
+        card_name = settings.get_antilopay_card_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ANTILOPAY_CARD', f'💳 {card_name}'),
+                    callback_data=_build_callback('antilopay_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_antilopay_sberpay_enabled():
+        sberpay_name = settings.get_antilopay_sberpay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ANTILOPAY_SBERPAY', f'💳 {sberpay_name}'),
+                    callback_data=_build_callback('antilopay_sberpay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if (
+        settings.is_antilopay_enabled()
+        and not settings.is_antilopay_sbp_enabled()
+        and not settings.is_antilopay_card_enabled()
+        and not settings.is_antilopay_sberpay_enabled()
+    ):
+        antilopay_name = settings.get_antilopay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_ANTILOPAY', f'💳 {antilopay_name}'),
+                    callback_data=_build_callback('antilopay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_jupiter_sbp_enabled():
+        jupiter_sbp_name = settings.get_jupiter_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_JUPITER_SBP', f'📱 {jupiter_sbp_name}'),
+                    callback_data=_build_callback('jupiter_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_jupiter_enabled() and not settings.is_jupiter_sbp_enabled():
+        jupiter_name = settings.get_jupiter_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_JUPITER', f'🪐 {jupiter_name}'),
+                    callback_data=_build_callback('jupiter'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_donut_card_enabled():
+        donut_card_name = settings.get_donut_card_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_DONUT_CARD', f'💳 {donut_card_name}'),
+                    callback_data=_build_callback('donut_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_donut_sbp_enabled():
+        donut_sbp_name = settings.get_donut_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_DONUT_SBP', f'📱 {donut_sbp_name}'),
+                    callback_data=_build_callback('donut_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_donut_sbp_qr_enabled():
+        donut_qr_name = settings.get_donut_sbp_qr_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_DONUT_SBP_QR', f'🏦 {donut_qr_name}'),
+                    callback_data=_build_callback('donut_sbp_qr'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if (
+        settings.is_donut_enabled()
+        and not settings.is_donut_card_enabled()
+        and not settings.is_donut_sbp_enabled()
+        and not settings.is_donut_sbp_qr_enabled()
+    ):
+        donut_name = settings.get_donut_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_DONUT', f'🍩 {donut_name}'),
+                    callback_data=_build_callback('donut'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_lava_card_enabled():
+        lava_card_name = settings.get_lava_card_display_name()
+        lava_name = settings.get_lava_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_LAVA_CARD', f'💳 {lava_card_name} - через {lava_name}'),
+                    callback_data=_build_callback('lava_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_lava_sbp_enabled():
+        lava_sbp_name = settings.get_lava_sbp_display_name()
+        lava_name = settings.get_lava_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_LAVA_SBP', f'📱 {lava_sbp_name} - через {lava_name}'),
+                    callback_data=_build_callback('lava_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_lava_enabled() and not settings.is_lava_card_enabled() and not settings.is_lava_sbp_enabled():
+        lava_name = settings.get_lava_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_LAVA', f'🌋 {lava_name}'),
+                    callback_data=_build_callback('lava'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_cispay_card_enabled():
+        cispay_card_name = settings.get_cispay_card_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_CISPAY_CARD', f'💳 {cispay_card_name}'),
+                    callback_data=_build_callback('cispay_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_cispay_sbp_enabled():
+        cispay_sbp_name = settings.get_cispay_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_CISPAY_SBP', f'📱 {cispay_sbp_name}'),
+                    callback_data=_build_callback('cispay_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_cispay_enabled() and not settings.is_cispay_card_enabled() and not settings.is_cispay_sbp_enabled():
+        cispay_name = settings.get_cispay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_CISPAY', f'💳 {cispay_name}'),
+                    callback_data=_build_callback('cispay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_tabpay_card_enabled():
+        tabpay_card_name = settings.get_tabpay_card_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_TABPAY_CARD', f'💳 {tabpay_card_name}'),
+                    callback_data=_build_callback('tabpay_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_tabpay_sbp_enabled():
+        tabpay_sbp_name = settings.get_tabpay_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_TABPAY_SBP', f'📱 {tabpay_sbp_name}'),
+                    callback_data=_build_callback('tabpay_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_tabpay_enabled() and not settings.is_tabpay_card_enabled() and not settings.is_tabpay_sbp_enabled():
+        tabpay_name = settings.get_tabpay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_TABPAY', f'💳 {tabpay_name}'),
+                    callback_data=_build_callback('tabpay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_paritypay_card_enabled():
+        paritypay_card_name = settings.get_paritypay_card_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_PARITYPAY_CARD', f'💳 {paritypay_card_name}'),
+                    callback_data=_build_callback('paritypay_card'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if settings.is_paritypay_sbp_enabled():
+        paritypay_sbp_name = settings.get_paritypay_sbp_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_PARITYPAY_SBP', f'📱 {paritypay_sbp_name}'),
+                    callback_data=_build_callback('paritypay_sbp'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
+    if (
+        settings.is_paritypay_enabled()
+        and not settings.is_paritypay_card_enabled()
+        and not settings.is_paritypay_sbp_enabled()
+    ):
+        paritypay_name = settings.get_paritypay_display_name()
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('PAYMENT_PARITYPAY', f'💳 {paritypay_name}'),
+                    callback_data=_build_callback('paritypay'),
+                )
+            ]
+        )
+        has_direct_payment_methods = True
+
     if settings.is_support_topup_enabled():
         keyboard.append(
             [
@@ -1861,6 +2359,8 @@ def get_payment_methods_keyboard(amount_kopeks: int, language: str = DEFAULT_LAN
         )
 
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_balance')])
+
+    _apply_payment_name_overrides(keyboard)
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -1924,6 +2424,18 @@ def get_referral_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMar
             )
         ],
     ]
+
+    # Кнопка появляется, только когда админ разрешил хотя бы одну из настроек:
+    # экран, на котором нечего менять, обещает влияние, которого нет.
+    if settings.is_referral_reward_kind_choice_enabled() or settings.is_referral_days_target_choice_enabled():
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('REFERRAL_REWARD_SETTINGS_BUTTON', '⚙️ Настройки наград'),
+                    callback_data='referral_reward_settings',
+                )
+            ]
+        )
 
     # Добавляем кнопку вывода, если включена
     if settings.is_referral_withdrawal_enabled():
@@ -2036,6 +2548,12 @@ def get_autopay_keyboard(language: str = DEFAULT_LANGUAGE, sub_id: int | None = 
                     text=texts.t('AUTOPAY_SET_DAYS_BUTTON', '⚙️ Настроить дни'), callback_data='autopay_set_days'
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=texts.t('AUTOPAY_SET_PERIOD_BUTTON', '📅 Период продления'),
+                    callback_data='autopay_set_period',
+                )
+            ],
             [InlineKeyboardButton(text=texts.BACK, callback_data=back_cb)],
         ]
     )
@@ -2117,6 +2635,31 @@ def get_autopay_days_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboar
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def get_autopay_period_keyboard(
+    available_periods: list[int],
+    current_period: int | None,
+    language: str = DEFAULT_LANGUAGE,
+) -> InlineKeyboardMarkup:
+    """Period picker for autopay. `current_period=None` means "use default"."""
+    texts = get_texts(language)
+    keyboard = []
+
+    default_label = texts.t('AUTOPAY_PERIOD_DEFAULT_BUTTON', '⚙️ По умолчанию (самый дешёвый)')
+    if current_period is None:
+        default_label = f'✅ {default_label}'
+    keyboard.append([InlineKeyboardButton(text=default_label, callback_data='autopay_period_default')])
+
+    for days in sorted(available_periods):
+        label = f'{days} {_get_days_word(days)}'
+        if current_period == days:
+            label = f'✅ {label}'
+        keyboard.append([InlineKeyboardButton(text=label, callback_data=f'autopay_period_{days}')])
+
+    keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='subscription_autopay')])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 def _get_days_word(days: int) -> str:
     if days % 10 == 1 and days % 100 != 11:
         return 'день'
@@ -2145,7 +2688,7 @@ def get_add_traffic_keyboard(
     # Считаем по дням (как в кабинете и подтверждении)
     if subscription_end_date:
         now = datetime.now(UTC)
-        days_left = max(1, (subscription_end_date - now).days)
+        days_left = max(1, math.ceil((subscription_end_date - now).total_seconds() / 86400))
         price_multiplier = days_left / 30
         period_text = f' (за {days_left} дн.)' if days_left > 1 else ' (за 1 день)'
     else:
@@ -2287,7 +2830,7 @@ def get_change_devices_keyboard(
     # Считаем по дням (как в кабинете и подтверждении)
     if subscription_end_date:
         now = datetime.now(UTC)
-        days_left = max(1, (subscription_end_date - now).days)
+        days_left = max(1, math.ceil((subscription_end_date - now).total_seconds() / 86400))
         price_multiplier = days_left / 30
         period_text = f' (за {days_left} дн.)' if days_left > 1 else ' (за 1 день)'
     else:
@@ -2298,8 +2841,8 @@ def get_change_devices_keyboard(
     tariff_device_price = getattr(tariff, 'device_price_kopeks', None) if tariff else None
     if tariff and tariff_device_price:
         device_price_per_month = tariff_device_price
-        # Для тарифов все устройства платные (нет бесплатного лимита)
-        default_device_limit = 0
+        # Устройства в пределах тарифного лимита — бесплатные
+        default_device_limit = tariff.device_limit if tariff else 0
     else:
         device_price_per_month = settings.PRICE_PER_DEVICE
         default_device_limit = settings.DEFAULT_DEVICE_LIMIT
@@ -2313,8 +2856,12 @@ def get_change_devices_keyboard(
     else:
         max_devices = settings.MAX_DEVICES_LIMIT if settings.MAX_DEVICES_LIMIT > 0 else 100
 
-    # Минимум при уменьшении всегда 1 (device_limit тарифа — это "включено при покупке", а не нижняя граница)
-    min_devices = 1
+    # По умолчанию ниже включённого в тариф опускать нельзя — кнопки с меньшими
+    # значениями просто не показываем (ALLOW_DEVICES_BELOW_TARIFF_LIMIT=True
+    # возвращает прежний минимум 1).
+    from app.utils.subscription_utils import resolve_min_device_limit
+
+    min_devices = resolve_min_device_limit(tariff)
 
     start_range = max(min_devices, min(current_devices - 3, max_devices - 6))
     end_range = min(max_devices + 1, max(current_devices + 4, 7))
@@ -2449,7 +2996,7 @@ def get_manage_countries_keyboard(
     # Считаем по дням (как в кабинете и подтверждении)
     if subscription_end_date:
         now = datetime.now(UTC)
-        days_left = max(1, (subscription_end_date - now).days)
+        days_left = max(1, math.ceil((subscription_end_date - now).total_seconds() / 86400))
         price_multiplier = days_left / 30
         logger.info(
             '🔍 Расчет для управления странами: осталось дней до',
@@ -2529,9 +3076,6 @@ def get_device_selection_keyboard(
     platforms: list[dict] | None = None,
     sub_id: int | None = None,
 ) -> InlineKeyboardMarkup:
-    from app.config import settings
-    from app.handlers.subscription.common import get_localized_value
-
     texts = get_texts(language)
     back_cb = f'sm:{sub_id}' if sub_id and settings.is_multi_tariff_enabled() else 'menu_subscription'
 
@@ -2584,8 +3128,6 @@ def get_connection_guide_keyboard(
     has_other_apps: bool = False,
     sub_id: int | None = None,
 ) -> InlineKeyboardMarkup:
-    from app.handlers.subscription.common import create_deep_link, get_localized_value, resolve_button_url
-
     texts = get_texts(language)
     back_cb = f'sm:{sub_id}' if sub_id and settings.is_multi_tariff_enabled() else 'menu_subscription'
 
@@ -2598,6 +3140,10 @@ def get_connection_guide_keyboard(
             if not isinstance(btn, dict):
                 continue
             btn_type = btn.get('type', '')
+            # Support both 'external' and 'externalLink' for backward compatibility
+            if btn_type == 'external':
+                btn_type = 'externalLink'
+
             btn_text = btn.get('text', {})
             if isinstance(btn_text, dict):
                 btn_text = get_localized_value(btn_text, language)
@@ -2619,9 +3165,26 @@ def get_connection_guide_keyboard(
                         ]
                     )
             elif btn_type == 'subscriptionLink':
+                # First try to resolve the button's URL template
                 url = resolved_url or resolve_button_url(btn_url, subscription_url)
-                deep_link = create_deep_link(app.get('_raw', app), subscription_url)
-                final_url = deep_link or url or subscription_url
+
+                # If button has no template, try deep link
+                if not btn_url or '{{SUBSCRIPTION_LINK}}' not in btn_url:
+                    deep_link = create_deep_link(app.get('_raw', app), subscription_url)
+                    final_url = deep_link or url or subscription_url
+                else:
+                    final_url = url or subscription_url
+
+                # Telegram doesn't support custom URL schemes — wrap with redirect
+                if final_url and not final_url.startswith(('http://', 'https://')):
+                    template = settings.get_happ_cryptolink_redirect_template()
+                    if template:
+                        wrapped_url = build_redirect_link(final_url, template)
+                        if wrapped_url:
+                            final_url = wrapped_url
+                    else:
+                        final_url = subscription_url
+
                 if final_url:
                     keyboard.append(
                         [
@@ -2828,15 +3391,29 @@ def get_devices_management_keyboard(
     keyboard = []
 
     for i, device in enumerate(devices):
-        platform = device.get('platform', 'Unknown')
-        device_model = device.get('deviceModel', 'Unknown')
-        device_info = f'{platform} - {device_model}'
+        # Локальный alias (если юзер задал) приоритетнее платформенной строки.
+        # `local_name` проставляется в attach_aliases_to_devices() ДО рендера.
+        local_name = (device.get('local_name') or '').strip()
+        if local_name:
+            device_info = local_name
+        else:
+            platform = device.get('platform', 'Unknown')
+            device_model = device.get('deviceModel', 'Unknown')
+            device_info = f'{platform} - {device_model}'
 
-        if len(device_info) > 25:
-            device_info = device_info[:22] + '...'
+        if len(device_info) > 22:
+            device_info = device_info[:19] + '...'
 
+        # Ряд: pencil-кнопка переименования (компактная иконка) + сброс
+        # устройства с его лейблом (исторический callback).
         keyboard.append(
-            [InlineKeyboardButton(text=f'🔄 {device_info}', callback_data=f'reset_device_{i}_{pagination.page}')]
+            [
+                InlineKeyboardButton(
+                    text=texts.t('DEVICE_RENAME_BUTTON', '✏️'),
+                    callback_data=f'device_rename_{i}_{pagination.page}',
+                ),
+                InlineKeyboardButton(text=f'🔄 {device_info}', callback_data=f'reset_device_{i}_{pagination.page}'),
+            ]
         )
 
     if pagination.total_pages > 1:
@@ -2950,6 +3527,16 @@ def get_updated_subscription_settings_keyboard(
             )
         ]
     )
+
+    if settings.is_subscription_revoke_enabled():
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('SUBSCRIPTION_REVOKE_BTN', '🔄 Перевыпустить подписку'),
+                    callback_data='subscription_revoke',
+                )
+            ]
+        )
 
     keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='menu_subscription')])
 
@@ -3258,6 +3845,137 @@ def get_admin_ticket_view_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def _coerce_tg_user_id(telegram_id: str | int | None) -> int | None:
+    """Приводит telegram_id к положительному int или возвращает None.
+
+    URL `tg://user?id=` принимает только числовой ID, поэтому строки вроде
+    email или нечисловые значения отбрасываются.
+    """
+    try:
+        numeric_id = int(telegram_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return numeric_id if numeric_id > 0 else None
+
+
+def get_ticket_notification_keyboard(
+    ticket_id: int,
+    *,
+    user_id: int | None = None,
+    telegram_id: str | int | None = None,
+    username: str | None = None,
+    is_closed: bool = False,
+    is_user_blocked: bool = False,
+    is_admin: bool = False,
+    fsm_enabled: bool = True,
+    cabinet_button: InlineKeyboardButton | None = None,
+    language: str = DEFAULT_LANGUAGE,
+) -> InlineKeyboardMarkup:
+    """Клавиатура для уведомления о тикете (личный или групповой админ-чат).
+
+    Отображает кнопки действий без «⬅️ Назад» — она не имеет смысла вне
+    контекста админки. Набор кнопок зависит от роли получателя:
+    - is_admin=True  → полный набор (включая «👤 К пользователю»);
+    - is_admin=False → набор без «👤 К пользователю» (@admin_required).
+
+    Args:
+        ticket_id: ID тикета.
+        user_id: DB-id пользователя (для callback «К пользователю»).
+        telegram_id: Telegram-id автора тикета (для URL-кнопки «Профиль»).
+        username: username автора тикета без @ (для URL-кнопки «ЛС»).
+        is_closed: тикет уже закрыт — скрываем «Ответить» и «Закрыть».
+        is_user_blocked: показываем «Разблокировать» вместо блок-контролов.
+        is_admin: получатель — полный админ (не модератор).
+        fsm_enabled: показывать ли кнопки, запускающие ввод текста через FSM
+            («Ответить», «Блок по времени»). В групповом/супергруппа-чате бот
+            из-за privacy mode не видит обычный текст ответа, поэтому туда
+            передаём ``False`` — остаются только надёжные callback/URL-кнопки.
+        cabinet_button: готовая кнопка «открыть тикет в кабинете» (web_app в личке
+            или t.me Mini App диплинк в группе). Размещается самым верхом. ``None`` —
+            не cabinet-режим / кабинет не настроен.
+        language: язык локализации.
+    """
+    texts = get_texts(language)
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    # Кнопка кабинета — самым верхом, чтобы была заметна (если передана).
+    if cabinet_button is not None:
+        keyboard.append([cabinet_button])
+
+    # URL-кнопки: не требуют прав, опциональны по наличию данных
+    url_row: list[InlineKeyboardButton] = []
+    if username:
+        safe_username = username.lstrip('@')
+        url_row.append(InlineKeyboardButton(text='✉ ЛС', url=f'tg://resolve?domain={safe_username}'))
+    if (tg_id := _coerce_tg_user_id(telegram_id)) is not None:
+        url_row.append(InlineKeyboardButton(text='👤 Профиль', url=f'tg://user?id={tg_id}'))
+    if url_row:
+        keyboard.append(url_row)
+
+    # «К пользователю» — только для полного админа (@admin_required)
+    if is_admin and user_id:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text='👤 К пользователю',
+                    callback_data=f'admin_user_manage_{user_id}_from_ticket_{ticket_id}',
+                )
+            ]
+        )
+
+    # «Ответить» запускает FSM (ввод текста) — в группе/канале ненадёжно
+    # (privacy mode бота не пропускает обычный текст), поэтому только при fsm_enabled.
+    if not is_closed and fsm_enabled:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('REPLY_TO_TICKET', '💬 Ответить'),
+                    callback_data=f'admin_reply_ticket_{ticket_id}',
+                )
+            ]
+        )
+    # «Закрыть» — обычный callback, работает везде, включая группу.
+    if not is_closed:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('CLOSE_TICKET', '🔒 Закрыть тикет'),
+                    callback_data=f'admin_close_ticket_{ticket_id}',
+                )
+            ]
+        )
+
+    # Блок-контролы
+    if is_user_blocked:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.t('UNBLOCK', '✅ Разблокировать'),
+                    callback_data=f'admin_unblock_user_ticket_{ticket_id}',
+                )
+            ]
+        )
+    else:
+        # «Заблокировать навсегда» — обычный callback (работает в группе);
+        # «Блок по времени» запускает FSM → только при fsm_enabled.
+        block_row = [
+            InlineKeyboardButton(
+                text=texts.t('BLOCK_FOREVER', '🚫 Заблокировать'),
+                callback_data=f'admin_block_user_perm_ticket_{ticket_id}',
+            )
+        ]
+        if fsm_enabled:
+            block_row.append(
+                InlineKeyboardButton(
+                    text=texts.t('BLOCK_BY_TIME', '⏳ Блок по времени'),
+                    callback_data=f'admin_block_user_ticket_{ticket_id}',
+                )
+            )
+        keyboard.append(block_row)
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 def get_admin_ticket_reply_cancel_keyboard(language: str = DEFAULT_LANGUAGE) -> InlineKeyboardMarkup:
     texts = get_texts(language)
     return InlineKeyboardMarkup(
@@ -3269,3 +3987,19 @@ def get_admin_ticket_reply_cancel_keyboard(language: str = DEFAULT_LANGUAGE) -> 
             ]
         ]
     )
+
+
+# Late-bound imports — placed at the bottom to break the
+# `keyboards.inline` ↔ `handlers.subscription.__init__` ↔ `autopay.py`
+# circular import chain. `autopay.py` imports `_get_payment_method_display_name`
+# (and other helpers) from inline.py at its module top level; by deferring
+# this import until inline.py finishes loading, those symbols are guaranteed
+# to exist when subscription/__init__.py loads autopay.
+# Function bodies above reference these names; Python resolves module-level
+# globals at call time, not definition time, so the late binding works.
+from app.handlers.subscription.common import (
+    build_redirect_link,
+    create_deep_link,
+    get_localized_value,
+    resolve_button_url,
+)

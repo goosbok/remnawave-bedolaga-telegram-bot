@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .media import TELEGRAM_FILE_ID_PATTERN
+
 
 # ============ Channel Types ============
 
@@ -81,6 +83,9 @@ class CustomBroadcastButton(BaseModel):
     label: str = Field(..., min_length=1, max_length=64)
     action_type: Literal['callback', 'url'] = 'callback'
     action_value: str = Field(..., min_length=1, max_length=256)
+    # Telegram custom emoji, показываемый перед текстом кнопки (#3025).
+    # Идентификаторы custom emoji — числовые строки (Bot API custom_emoji_id).
+    icon_custom_emoji_id: str | None = Field(default=None, pattern=r'^\d{1,64}$')
 
     @field_validator('action_value')
     @classmethod
@@ -103,7 +108,9 @@ class BroadcastMediaRequest(BaseModel):
     """Media attachment for broadcast."""
 
     type: str = Field(..., pattern=r'^(photo|video|document)$')
-    file_id: str
+    # Только то, что вернул /cabinet/media/upload: URL или пустая строка упали бы
+    # у каждого получателя уже на отправке.
+    file_id: str = Field(..., pattern=TELEGRAM_FILE_ID_PATTERN)
     caption: str | None = None
 
 
@@ -118,6 +125,7 @@ class BroadcastCreateRequest(BaseModel):
     selected_buttons: list[str] = Field(default_factory=lambda: ['home'])
     custom_buttons: list[CustomBroadcastButton] = Field(default_factory=list, max_length=10)
     media: BroadcastMediaRequest | None = None
+    category: str = Field(default='system', pattern='^(system|news|promo)$')
 
 
 # ============ Response ============
@@ -143,6 +151,9 @@ class BroadcastResponse(BaseModel):
     created_at: datetime
     completed_at: datetime | None = None
     progress_percent: float = 0.0
+
+    # Category for user notification preference filtering
+    category: str = 'system'  # system|news|promo
 
     # Email/channel fields
     channel: str = 'telegram'  # telegram|email|both
@@ -212,6 +223,9 @@ class CombinedBroadcastCreateRequest(BaseModel):
     custom_buttons: list[CustomBroadcastButton] = Field(default_factory=list, max_length=10)
     media: BroadcastMediaRequest | None = None
 
+    # Broadcast category for user notification preference filtering
+    category: str = Field(default='system', pattern='^(system|news|promo)$')
+
     # Email-specific fields
     email_subject: str | None = Field(default=None, max_length=255)
     email_html_content: str | None = Field(default=None, max_length=100000)
@@ -231,3 +245,16 @@ class EmailPreviewResponse(BaseModel):
 
     target: str
     count: int
+
+
+class EmailRenderRequest(BaseModel):
+    """Письмо рассылки так, как его получит адресат (в общей обёртке)."""
+
+    subject: str = ''
+    html_content: str = ''
+    language: str = 'ru'
+
+
+class EmailRenderResponse(BaseModel):
+    subject: str
+    body_html: str

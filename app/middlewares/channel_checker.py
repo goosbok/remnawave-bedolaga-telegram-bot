@@ -1,10 +1,11 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 from aiogram import BaseMiddleware, Bot, types
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 
@@ -29,6 +30,31 @@ logger = structlog.get_logger(__name__)
 # Redis key prefix and TTL for pending /start payload backup
 REDIS_PAYLOAD_KEY_PREFIX = 'pending_start_payload:'
 REDIS_PAYLOAD_TTL = 3600  # 1 hour
+
+# Отказы Telegram, означающие, что писать больше некому: бот заблокирован,
+# аккаунт удалён, чат недоступен. Апдейт от такого пользователя всё равно
+# доезжает (он мог заблокировать бота уже после отправки), а гейт по подписке
+# честно пытается ему ответить и получает 403.
+_UNREACHABLE_USER_ERRORS = (
+    'bot was blocked',
+    'user is deactivated',
+    'chat not found',
+)
+
+
+def _is_user_unreachable(error: BaseException) -> bool:
+    """Сообщение физически некуда доставить — не ошибка бота.
+
+    Такие отказы логируются debug-строкой: на error-уровне
+    ``TelegramNotifierProcessor`` разворачивает ``sys.exc_info()`` и шлёт
+    админам traceback, то есть каждый заблокировавший бота пользователь
+    превращается в отчёт об ошибке.
+    """
+    if isinstance(error, TelegramForbiddenError):
+        return True
+    if isinstance(error, TelegramBadRequest):
+        return any(marker in str(error).lower() for marker in _UNREACHABLE_USER_ERRORS)
+    return False
 
 
 async def save_pending_payload_to_redis(telegram_id: int, payload: str) -> bool:
@@ -115,6 +141,15 @@ class ChannelCheckerMiddleware(BaseMiddleware):
         if settings.is_admin(telegram_id):
             return await handler(event, data)
 
+        # Moderators are support staff: never gate them behind mandatory channel
+        # subscription, otherwise the ticket reply/block FSM flows exposed by the
+        # new notification buttons (issue #2988) get silently swallowed for an
+        # unsubscribed moderator. In-memory cache check, no I/O on the hot path.
+        from app.services.support_settings_service import SupportSettingsService
+
+        if SupportSettingsService.is_moderator(telegram_id):
+            return await handler(event, data)
+
         state: FSMContext = data.get('state')
         current_state = await state.get_state() if state else None
         if is_registration_process(event, current_state):
@@ -183,8 +218,18 @@ class ChannelCheckerMiddleware(BaseMiddleware):
 
             try:
                 await event.message.edit_text(text, reply_markup=channel_sub_kb)
-            except TelegramBadRequest as e:
-                if 'message is not modified' not in str(e).lower():
+            except (TelegramBadRequest, TelegramForbiddenError) as e:
+                if 'message is not modified' in str(e).lower():
+                    pass
+                elif _is_user_unreachable(e):
+                    # Иначе 403 улетит в GlobalErrorMiddleware и станет отчётом
+                    # админам, хотя обновлять клавиатуру попросту некому.
+                    logger.debug(
+                        'Список каналов не обновлён: пользователь недоступен',
+                        telegram_id=telegram_id,
+                        error=str(e),
+                    )
+                else:
                     raise
 
             try:
@@ -245,6 +290,13 @@ class ChannelCheckerMiddleware(BaseMiddleware):
             elif isinstance(event, Update) and event.message:
                 return await bot.send_message(event.message.chat.id, text, reply_markup=channel_sub_kb)
         except Exception as e:
+            if _is_user_unreachable(e):
+                logger.debug(
+                    'Приглашение подписаться не доставлено: пользователь недоступен',
+                    telegram_id=getattr(user, 'id', None),
+                    error=str(e),
+                )
+                return None
             logger.error('Error sending subscription prompt', error=e)
 
     # -- _capture_start_payload ------------------------------------------------
@@ -286,12 +338,95 @@ class ChannelCheckerMiddleware(BaseMiddleware):
         # Save to FSM state
         if state:
             state_data = await state.get_data() or {}
-            if state_data.get('pending_start_payload') != payload:
+            existing_payload = state_data.get('pending_start_payload')
+
+            # Защита первого касания: если в FSM уже хранится payload
+            # активной рекламной кампании — не перезаписываем его.
+            # Сценарий: пользователь кликнул ?start=ads_1, был
+            # заблокирован каналом, затем перешёл по ?start=channel
+            # до регистрации — нужно сохранить ads_1 для атрибуции.
+            #
+            # Оптимизация: FSM-флаг 'pending_payload_is_campaign' выставляется
+            # при первом подтверждении кампании, чтобы последующие /start
+            # не делали лишний запрос в БД.
+            if existing_payload and existing_payload != payload:
+                # Быстрый путь: флаг уже выставлен при первом сохранении.
+                existing_is_campaign = state_data.get('pending_payload_is_campaign', False)
+
+                if not existing_is_campaign:
+                    # Медленный путь: выполняется максимум один раз для текущего
+                    # existing_payload — только если он ещё не подтверждён как кампания.
+                    # Если payload не является кампанией, флаг не выставляется,
+                    # и при следующей смене payload проверка повторится уже для нового значения.
+                    _db_check_failed = False
+                    async with AsyncSessionLocal() as db_check:
+                        try:
+                            _campaign = await get_campaign_by_start_parameter(
+                                db_check,
+                                existing_payload,
+                                only_active=True,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as _check_err:
+                            logger.warning(
+                                'Не удалось проверить кампанию payload (первое касание)',
+                                existing_payload=existing_payload,
+                                error=_check_err,
+                            )
+                            _db_check_failed = True
+                            _campaign = None
+
+                    # Fail-closed: при ошибке БД не перезаписываем existing_payload —
+                    # он может быть кампанией. Выходим без изменений.
+                    if _db_check_failed:
+                        return
+
+                    if _campaign:
+                        # Сохраняем флаг, чтобы следующие вызовы не ходили в БД.
+                        state_data['pending_payload_is_campaign'] = True
+                        await state.set_data(state_data)
+                        existing_is_campaign = True
+
+                if existing_is_campaign:
+                    logger.info(
+                        '🔒 Payload кампании сохранён, перезапись пропущена',
+                        existing_payload=existing_payload,
+                        new_payload=payload,
+                        telegram_id=telegram_id,
+                    )
+                    # Обновляем Redis-бэкап первого касания, чтобы он не протух
+                    # пока пользователь заблокирован каналом.
+                    if telegram_id:
+                        await save_pending_payload_to_redis(telegram_id, existing_payload)
+                    # Уведомление о визите по новому payload отправляем
+                    # в том случае, если он тоже является кампанией.
+                    if bot and message.from_user and state:
+                        await self._try_send_campaign_visit_notification(
+                            bot=bot,
+                            telegram_user=message.from_user,
+                            state=state,
+                            payload=payload,
+                        )
+                    # Первое касание уже застолблено — выходим.
+                    return
+
+            if existing_payload != payload:
                 state_data['pending_start_payload'] = payload
+                # Сбрасываем флаг кампании — для нового payload он будет
+                # проверен заново при следующей попытке /start.
+                state_data.pop('pending_payload_is_campaign', None)
                 await state.set_data(state_data)
-                logger.info('Saved start payload for user (FSM)', payload=payload, telegram_id=telegram_id)
+                logger.info(
+                    'Saved start payload for user (FSM)',
+                    payload=payload,
+                    telegram_id=telegram_id,
+                )
         else:
-            logger.warning('_capture_start_payload: state=None for user', telegram_id=telegram_id)
+            logger.warning(
+                '_capture_start_payload: state=None for user',
+                telegram_id=telegram_id,
+            )
 
         # Also save to Redis as backup (in case FSM state is lost)
         if telegram_id:
@@ -332,6 +467,12 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                     return
 
                 user = await get_user_by_telegram_id(db, telegram_user.id)
+
+                # Visit-уведомление шлём только для новых юзеров (user is None).
+                # Для existing-юзеров будет «РЕГИСТРАЦИЯ ПО РК» через bot-flow
+                # (_apply_campaign_bonus_if_needed) — паритет с числом записей в БД.
+                if user is not None:
+                    return
 
                 notification_service = AdminNotificationService(bot)
                 sent = await notification_service.send_campaign_link_visit_notification(
@@ -390,23 +531,23 @@ class ChannelCheckerMiddleware(BaseMiddleware):
 
                 service = SubscriptionService()
                 for subscription in deactivated_subs:
-                    panel_uuid = (
-                        subscription.remnawave_uuid
-                        if settings.is_multi_tariff_enabled() and subscription.remnawave_uuid
-                        else user.remnawave_uuid
+                    panel_user_id = (
+                        subscription.remnawave_id
+                        if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+                        else user.remnawave_id
                     )
-                    if panel_uuid:
+                    if panel_user_id:
                         try:
-                            await service.disable_remnawave_user(panel_uuid)
+                            await service.disable_remnawave_user(panel_user_id)
                         except Exception as api_error:
                             logger.error(
                                 'Failed to disable RemnaWave user',
-                                remnawave_uuid=panel_uuid,
+                                remnawave_id=panel_user_id,
                                 api_error=api_error,
                             )
 
                 # Notify user about deactivation
-                if deactivated_subs:
+                if deactivated_subs and settings.is_notifications_enabled():
                     try:
                         normalized = _normalize_channels(channels)
                         texts = get_texts(user.language or DEFAULT_LANGUAGE)
@@ -425,11 +566,18 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                         channel_kb = get_channel_sub_keyboard(normalized, language=user.language)
                         await bot.send_message(telegram_id, notification_text, reply_markup=channel_kb)
                     except Exception as notify_error:
-                        logger.error(
-                            'Failed to send deactivation notification to user',
-                            telegram_id=telegram_id,
-                            notify_error=notify_error,
-                        )
+                        if _is_user_unreachable(notify_error):
+                            logger.debug(
+                                'Уведомление об отключении подписки не доставлено: пользователь недоступен',
+                                telegram_id=telegram_id,
+                                error=str(notify_error),
+                            )
+                        else:
+                            logger.error(
+                                'Failed to send deactivation notification to user',
+                                telegram_id=telegram_id,
+                                notify_error=notify_error,
+                            )
                 await db.commit()
             except Exception as db_error:
                 logger.error(
@@ -478,23 +626,26 @@ class ChannelCheckerMiddleware(BaseMiddleware):
                 # Enable in RemnaWave
                 service = SubscriptionService()
                 for subscription in disabled_subs:
-                    panel_uuid = (
-                        subscription.remnawave_uuid
-                        if settings.is_multi_tariff_enabled() and subscription.remnawave_uuid
-                        else user.remnawave_uuid
+                    panel_user_id = (
+                        subscription.remnawave_id
+                        if settings.is_multi_tariff_enabled() and subscription.remnawave_id
+                        else user.remnawave_id
                     )
-                    if panel_uuid:
+                    if panel_user_id:
                         try:
-                            await service.enable_remnawave_user(panel_uuid)
+                            await service.enable_remnawave_user(panel_user_id)
                         except Exception as api_error:
                             logger.error(
                                 'Failed to enable RemnaWave user',
-                                remnawave_uuid=panel_uuid,
+                                remnawave_id=panel_user_id,
                                 api_error=api_error,
                             )
 
                 # Notify user about reactivation
                 try:
+                    if not settings.is_notifications_enabled():
+                        await db.commit()
+                        return
                     texts = get_texts(user.language or DEFAULT_LANGUAGE)
                     if settings.is_multi_tariff_enabled() and len(disabled_subs) > 1:
                         notification_text = texts.t(

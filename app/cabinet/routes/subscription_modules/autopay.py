@@ -49,7 +49,8 @@ async def update_autopay(
             )
 
         # Триальные подписки — пробник, автопродление не имеет смысла
-        if subscription.is_trial:
+        # NULL-safe: is_trial can be None in legacy rows — treat as trial
+        if subscription.is_trial is not False:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Autopay is not available for trial subscriptions',
@@ -71,6 +72,18 @@ async def update_autopay(
 
     await db.commit()
 
+    if request.enabled:
+        # Обратное взаимоисключение: включение баланс-автоплатежа должно
+        # отменить активную СБП-автоподписку Platega у той же подписки —
+        # иначе оба движка продления начнут списывать параллельно (двойное
+        # списание). Прямое взаимоисключение (СБП -> выключение
+        # balance-autopay) уже реализовано в create_platega_sbp_subscription.
+        from app.services.payment.lava import cancel_lava_recurring_for_subscription_safe
+        from app.services.payment.platega import cancel_platega_recurring_for_subscription_safe
+
+        await cancel_platega_recurring_for_subscription_safe(db, subscription.id)
+
+        await cancel_lava_recurring_for_subscription_safe(db, subscription.id)
     return {
         'message': 'Autopay settings updated',
         'autopay_enabled': subscription.autopay_enabled,

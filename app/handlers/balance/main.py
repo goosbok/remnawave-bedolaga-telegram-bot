@@ -149,6 +149,90 @@ async def route_payment_by_method(
             await process_severpay_payment_amount(message, db_user, db, amount_kopeks, state)
         return True
 
+    if payment_method == 'paypear':
+        from .paypear import process_paypear_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_paypear_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method == 'rollypay':
+        from .rollypay import process_rollypay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_rollypay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('overpay', 'overpay_fps', 'overpay_card', 'overpay_int'):
+        from .overpay import process_overpay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_overpay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('aurapay', 'aurapay_sbp', 'aurapay_card'):
+        from .aurapay import process_aurapay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_aurapay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('etoplatezhi', 'etoplatezhi_sbp', 'etoplatezhi_card'):
+        from .etoplatezhi import process_etoplatezhi_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_etoplatezhi_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('antilopay', 'antilopay_sbp', 'antilopay_card', 'antilopay_sberpay'):
+        from .antilopay import process_antilopay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_antilopay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('jupiter', 'jupiter_sbp'):
+        from .jupiter import process_jupiter_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_jupiter_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('donut', 'donut_card', 'donut_sbp', 'donut_sbp_qr'):
+        from .donut import process_donut_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_donut_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('lava', 'lava_card', 'lava_sbp'):
+        from .lava import process_lava_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_lava_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('paritypay', 'paritypay_card', 'paritypay_sbp'):
+        from .paritypay import process_paritypay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_paritypay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('tabpay', 'tabpay_card', 'tabpay_sbp'):
+        from .tabpay import process_tabpay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_tabpay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
+    if payment_method in ('cispay', 'cispay_card', 'cispay_sbp'):
+        from .cispay import process_cispay_payment_amount
+
+        async with AsyncSessionLocal() as db:
+            await process_cispay_payment_amount(message, db_user, db, amount_kopeks, state)
+        return True
+
     if payment_method == 'riopay':
         from .riopay import process_riopay_payment_amount
 
@@ -379,7 +463,8 @@ async def handle_successful_topup_with_cart(user_id: int, amount_kopeks: int, bo
                 balance_hint = 'Средств на балансе достаточно для оформления.'
             else:
                 missing = max(total_price - user.balance_kopeks, 0)
-                balance_hint = f'Не хватает: {texts.format_price(missing)}'
+                # Без округления, иначе при не хватке <50 копеек покажется «0 ₽».
+                balance_hint = f'Не хватает: {texts.format_price(missing, round_kopeks=False)}'
 
             success_text = (
                 f'✅ Баланс пополнен на {texts.format_price(amount_kopeks)}!\n\n'
@@ -470,12 +555,16 @@ async def process_topup_amount(message: types.Message, db_user: User, state: FSM
         amount_rubles = float(amount_text.replace(',', '.'))
 
         if amount_rubles < 1:
-            await message.answer('Минимальная сумма пополнения: 1 ₽', reply_markup=get_back_keyboard(db_user.language))
+            await message.answer(
+                'Минимальная сумма пополнения: 1 ₽',
+                reply_markup=get_back_keyboard(db_user.language, callback_data='balance_topup'),
+            )
             return
 
         if amount_rubles > 50000:
             await message.answer(
-                'Максимальная сумма пополнения: 50,000 ₽', reply_markup=get_back_keyboard(db_user.language)
+                'Максимальная сумма пополнения: 50,000 ₽',
+                reply_markup=get_back_keyboard(db_user.language, callback_data='balance_topup'),
             )
             return
 
@@ -488,7 +577,7 @@ async def process_topup_amount(message: types.Message, db_user: User, state: FSM
                 min_rubles = settings.YOOKASSA_MIN_AMOUNT_KOPEKS / 100
                 await message.answer(
                     f'❌ Минимальная сумма для оплаты через YooKassa: {min_rubles:.0f} ₽',
-                    reply_markup=get_back_keyboard(db_user.language),
+                    reply_markup=get_back_keyboard(db_user.language, callback_data='balance_topup'),
                 )
                 return
 
@@ -496,7 +585,7 @@ async def process_topup_amount(message: types.Message, db_user: User, state: FSM
                 max_rubles = settings.YOOKASSA_MAX_AMOUNT_KOPEKS / 100
                 await message.answer(
                     f'❌ Максимальная сумма для оплаты через YooKassa: {max_rubles:,.0f} ₽'.replace(',', ' '),
-                    reply_markup=get_back_keyboard(db_user.language),
+                    reply_markup=get_back_keyboard(db_user.language, callback_data='balance_topup'),
                 )
                 return
 
@@ -546,6 +635,12 @@ async def handle_sbp_payment(callback: types.CallbackQuery, db: AsyncSession):
         await callback.answer('❌ Ошибка обработки платежа', show_alert=True)
 
 
+async def _reply_after_answer(callback: types.CallbackQuery, text: str) -> None:
+    """Нажатие уже подтверждено — второй answer() Telegram отвергнет, поэтому пишем сообщением."""
+    if isinstance(callback.message, types.Message):
+        await callback.message.answer(text)
+
+
 @error_handler
 async def handle_topup_amount_callback(
     callback: types.CallbackQuery,
@@ -563,8 +658,27 @@ async def handle_topup_amount_callback(
         await callback.answer('❌ Некорректная сумма', show_alert=True)
         return
 
+    # Сценарии, которым передаётся сам callback, отвечают на нажатие сами (у них свои алерты).
+    if method == 'tribute':
+        from .tribute import start_tribute_payment
+
+        await start_tribute_payment(callback, db_user)
+        return
+
+    if method == 'platega':
+        data = await state.get_data()
+        if (int(data.get('platega_method', 0)) if data else 0) <= 0:
+            from .platega import start_platega_payment
+
+            await state.update_data(platega_pending_amount=amount_kopeks)
+            await start_platega_payment(callback, db_user, state)
+            return
+
+    # Снимаем «часики» до похода к провайдеру: создание платежа может идти секунды, а Telegram
+    # ждёт ответ на нажатие недолго. Поздний answer() падал с «query is too old», собственный
+    # except считал это ошибкой пополнения и слал отчёт админам, хотя ссылка на оплату уже ушла.
+    await callback.answer()
     try:
-        # Особые случаи, требующие специальной логики
         if method.startswith('platega_m'):
             from app.database.database import AsyncSessionLocal
 
@@ -572,37 +686,30 @@ async def handle_topup_amount_callback(
 
             platega_method_code = int(method[len('platega_m') :])
             await state.update_data(payment_method='platega', platega_method=platega_method_code)
+            await state.set_state(BalanceStates.waiting_for_amount)
             async with AsyncSessionLocal() as db:
                 await process_platega_payment_amount(callback.message, db_user, db, amount_kopeks, state)
         elif method == 'platega':
+            # Код способа уже лежит в состоянии — проверено выше.
             from app.database.database import AsyncSessionLocal
 
-            from .platega import process_platega_payment_amount, start_platega_payment
+            from .platega import process_platega_payment_amount
 
-            data = await state.get_data()
-            method_code = int(data.get('platega_method', 0)) if data else 0
-
-            if method_code > 0:
-                async with AsyncSessionLocal() as db:
-                    await process_platega_payment_amount(callback.message, db_user, db, amount_kopeks, state)
-            else:
-                await state.update_data(platega_pending_amount=amount_kopeks)
-                await start_platega_payment(callback, db_user, state)
-        elif method == 'tribute':
-            from .tribute import start_tribute_payment
-
-            await start_tribute_payment(callback, db_user)
-            return
+            await state.set_state(BalanceStates.waiting_for_amount)
+            async with AsyncSessionLocal() as db:
+                await process_platega_payment_amount(callback.message, db_user, db, amount_kopeks, state)
         # Стандартные методы через роутер
-        elif not await route_payment_by_method(callback.message, db_user, amount_kopeks, state, method):
-            await callback.answer('❌ Неизвестный способ оплаты', show_alert=True)
-            return
+        else:
+            await state.update_data(payment_method=method)
+            await state.set_state(BalanceStates.waiting_for_amount)
+            if not await route_payment_by_method(callback.message, db_user, amount_kopeks, state, method):
+                await _reply_after_answer(callback, '❌ Неизвестный способ оплаты')
 
-        await callback.answer()
-
+    except TelegramBadRequest:
+        raise  # устаревший запрос и прочие ответы Telegram классифицирует @error_handler
     except Exception as error:
         logger.error('Ошибка быстрого пополнения', error=error)
-        await callback.answer('❌ Ошибка обработки запроса', show_alert=True)
+        await _reply_after_answer(callback, '❌ Ошибка обработки запроса')
 
 
 def register_balance_handlers(dp: Dispatcher):
@@ -718,6 +825,91 @@ def register_balance_handlers(dp: Dispatcher):
     from .severpay import start_severpay_topup
 
     dp.callback_query.register(start_severpay_topup, F.data == 'topup_severpay')
+
+    from .paypear import start_paypear_topup
+
+    dp.callback_query.register(start_paypear_topup, F.data == 'topup_paypear')
+
+    from .rollypay import start_rollypay_topup
+
+    dp.callback_query.register(start_rollypay_topup, F.data == 'topup_rollypay')
+
+    from .overpay import (
+        start_overpay_card_topup,
+        start_overpay_fps_topup,
+        start_overpay_int_topup,
+        start_overpay_topup,
+    )
+
+    dp.callback_query.register(start_overpay_topup, F.data == 'topup_overpay')
+    dp.callback_query.register(start_overpay_fps_topup, F.data == 'topup_overpay_fps')
+    dp.callback_query.register(start_overpay_card_topup, F.data == 'topup_overpay_card')
+    dp.callback_query.register(start_overpay_int_topup, F.data == 'topup_overpay_int')
+
+    from .aurapay import start_aurapay_card_topup, start_aurapay_sbp_topup, start_aurapay_topup
+
+    dp.callback_query.register(start_aurapay_topup, F.data == 'topup_aurapay')
+    dp.callback_query.register(start_aurapay_sbp_topup, F.data == 'topup_aurapay_sbp')
+    dp.callback_query.register(start_aurapay_card_topup, F.data == 'topup_aurapay_card')
+
+    from .etoplatezhi import start_etoplatezhi_card_topup, start_etoplatezhi_sbp_topup, start_etoplatezhi_topup
+
+    dp.callback_query.register(start_etoplatezhi_topup, F.data == 'topup_etoplatezhi')
+    dp.callback_query.register(start_etoplatezhi_sbp_topup, F.data == 'topup_etoplatezhi_sbp')
+    dp.callback_query.register(start_etoplatezhi_card_topup, F.data == 'topup_etoplatezhi_card')
+
+    from .antilopay import (
+        start_antilopay_card_topup,
+        start_antilopay_sberpay_topup,
+        start_antilopay_sbp_topup,
+        start_antilopay_topup,
+    )
+
+    dp.callback_query.register(start_antilopay_topup, F.data == 'topup_antilopay')
+    dp.callback_query.register(start_antilopay_sbp_topup, F.data == 'topup_antilopay_sbp')
+    dp.callback_query.register(start_antilopay_card_topup, F.data == 'topup_antilopay_card')
+    dp.callback_query.register(start_antilopay_sberpay_topup, F.data == 'topup_antilopay_sberpay')
+
+    from .jupiter import start_jupiter_sbp_topup, start_jupiter_topup
+
+    dp.callback_query.register(start_jupiter_topup, F.data == 'topup_jupiter')
+    dp.callback_query.register(start_jupiter_sbp_topup, F.data == 'topup_jupiter_sbp')
+
+    from .donut import (
+        start_donut_card_topup,
+        start_donut_sbp_qr_topup,
+        start_donut_sbp_topup,
+        start_donut_topup,
+    )
+
+    dp.callback_query.register(start_donut_topup, F.data == 'topup_donut')
+    dp.callback_query.register(start_donut_card_topup, F.data == 'topup_donut_card')
+    dp.callback_query.register(start_donut_sbp_topup, F.data == 'topup_donut_sbp')
+    dp.callback_query.register(start_donut_sbp_qr_topup, F.data == 'topup_donut_sbp_qr')
+
+    from .lava import start_lava_card_topup, start_lava_sbp_topup, start_lava_topup
+
+    dp.callback_query.register(start_lava_topup, F.data == 'topup_lava')
+    dp.callback_query.register(start_lava_card_topup, F.data == 'topup_lava_card')
+    dp.callback_query.register(start_lava_sbp_topup, F.data == 'topup_lava_sbp')
+
+    from .cispay import start_cispay_card_topup, start_cispay_sbp_topup, start_cispay_topup
+
+    dp.callback_query.register(start_cispay_topup, F.data == 'topup_cispay')
+    dp.callback_query.register(start_cispay_card_topup, F.data == 'topup_cispay_card')
+    dp.callback_query.register(start_cispay_sbp_topup, F.data == 'topup_cispay_sbp')
+
+    from .tabpay import start_tabpay_card_topup, start_tabpay_sbp_topup, start_tabpay_topup
+
+    dp.callback_query.register(start_tabpay_topup, F.data == 'topup_tabpay')
+    dp.callback_query.register(start_tabpay_card_topup, F.data == 'topup_tabpay_card')
+    dp.callback_query.register(start_tabpay_sbp_topup, F.data == 'topup_tabpay_sbp')
+
+    from .paritypay import start_paritypay_card_topup, start_paritypay_sbp_topup, start_paritypay_topup
+
+    dp.callback_query.register(start_paritypay_topup, F.data == 'topup_paritypay')
+    dp.callback_query.register(start_paritypay_card_topup, F.data == 'topup_paritypay_card')
+    dp.callback_query.register(start_paritypay_sbp_topup, F.data == 'topup_paritypay_sbp')
 
     from .mulenpay import check_mulenpay_payment_status
 

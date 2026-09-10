@@ -35,6 +35,8 @@ from ..schemas.broadcasts import (
     EmailFiltersResponse,
     EmailPreviewRequest,
     EmailPreviewResponse,
+    EmailRenderRequest,
+    EmailRenderResponse,
     TariffFilter,
     TariffForBroadcast,
 )
@@ -141,6 +143,7 @@ def _serialize_broadcast(broadcast: BroadcastHistory) -> BroadcastResponse:
         created_at=broadcast.created_at,
         completed_at=broadcast.completed_at,
         progress_percent=progress,
+        category=getattr(broadcast, 'category', 'system') or 'system',
         channel=getattr(broadcast, 'channel', 'telegram') or 'telegram',
         email_subject=getattr(broadcast, 'email_subject', None),
         email_html_content=getattr(broadcast, 'email_html_content', None),
@@ -220,6 +223,24 @@ async def _get_tariff_user_counts(db: AsyncSession) -> dict:
         .group_by(Subscription.tariff_id)
     )
     return {row.tariff_id: row.count for row in result.all()}
+
+
+# Telegram: подпись к фото/видео/документу не длиннее 1024 символов (текстовое
+# сообщение — до 4096). Проверяем на входе: иначе каждый получатель получает
+# MEDIA_CAPTION_TOO_LONG, а админ — failed = total без объяснений.
+_MEDIA_CAPTION_LIMIT = 1024
+
+
+def _ensure_media_caption_fits(caption: str) -> None:
+    """Отклонить рассылку с медиа, чью подпись Telegram не примет."""
+    if len(caption) > _MEDIA_CAPTION_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f'Текст слишком длинный для сообщения с медиа. Максимум {_MEDIA_CAPTION_LIMIT} символов, '
+                f'сейчас {len(caption)}. Сократите текст или уберите медиафайл.'
+            ),
+        )
 
 
 def _validate_target(target: str, tariff_ids: set) -> bool:
@@ -411,12 +432,8 @@ async def create_broadcast(
 
     media_payload = request.media
 
-    # Validate caption length for media messages (Telegram limit: 1024 chars)
-    if media_payload and len(message_text) > 1024:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Текст слишком длинный для сообщения с медиа. Максимум 1024 символов, сейчас {len(message_text)}. Сократите текст или уберите медиафайл.',
-        )
+    if media_payload:
+        _ensure_media_caption_fits(media_payload.caption or message_text)
 
     # Create broadcast record
     broadcast = BroadcastHistory(
@@ -432,6 +449,7 @@ async def create_broadcast(
         status='queued',
         admin_id=admin.id,
         admin_name=admin.username or f'Admin #{admin.id}',
+        category=request.category,
     )
     db.add(broadcast)
     await db.commit()
@@ -454,6 +472,7 @@ async def create_broadcast(
         media=media_config,
         initiator_name=admin.username or f'Admin #{admin.id}',
         custom_buttons=[btn.model_dump() for btn in request.custom_buttons] if request.custom_buttons else None,
+        category=request.category,
     )
 
     # Start broadcast
@@ -553,6 +572,31 @@ async def preview_email_broadcast(
     return EmailPreviewResponse(target=request.target, count=count)
 
 
+@router.post('/email-render', response_model=EmailRenderResponse)
+async def render_email_broadcast(
+    request: EmailRenderRequest,
+    admin: User = Depends(require_permission('broadcasts:read')),
+) -> EmailRenderResponse:
+    """Письмо рассылки так, как его получит адресат.
+
+    Фрагмент HTML встаёт в общую обёртку писем (сохранённую в редакторе
+    шаблонов или встроенную), полный документ уходит как есть — ровно как при
+    отправке, чтобы превью в кабинете не расходилось с письмом.
+    """
+    from app.cabinet.services.email_layout import refresh_email_layout_cache
+    from app.services.broadcast_service import EmailBroadcastService, _EmailRecipient
+
+    await refresh_email_layout_cache()
+    recipient = _EmailRecipient(
+        email=admin.email or 'user@example.com',
+        user_name=admin.username or admin.first_name or 'User',
+        user_id=admin.id,
+        language=request.language or 'ru',
+    )
+    subject, body_html = EmailBroadcastService.render_email(request.subject, request.html_content, recipient)
+    return EmailRenderResponse(subject=subject, body_html=body_html)
+
+
 @router.post('/send', response_model=BroadcastResponse, status_code=status.HTTP_201_CREATED)
 async def create_combined_broadcast(
     request: CombinedBroadcastCreateRequest,
@@ -581,6 +625,10 @@ async def create_combined_broadcast(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Message text is required for Telegram broadcast',
             )
+
+        # Та же граница, что у POST '' выше: именно этот эндпоинт использует кабинет.
+        if request.media:
+            _ensure_media_caption_fits(request.media.caption or request.message_text.strip())
 
         # Validate buttons
         if not _validate_buttons(request.selected_buttons):
@@ -626,6 +674,7 @@ async def create_combined_broadcast(
         status='queued',
         admin_id=admin.id,
         admin_name=admin_name,
+        category=request.category,
         channel=request.channel,
         email_subject=request.email_subject.strip() if request.email_subject else None,
         email_html_content=request.email_html_content.strip() if request.email_html_content else None,
@@ -653,6 +702,7 @@ async def create_combined_broadcast(
             media=media_config,
             initiator_name=admin_name,
             custom_buttons=[btn.model_dump() for btn in request.custom_buttons] if request.custom_buttons else None,
+            category=request.category,
         )
 
         await broadcast_service.start_broadcast(broadcast.id, telegram_config)
@@ -668,6 +718,7 @@ async def create_combined_broadcast(
             email_subject=request.email_subject.strip(),
             email_html_content=request.email_html_content.strip(),
             initiator_name=admin_name,
+            category=request.category,
         )
 
         await email_broadcast_service.start_broadcast(broadcast.id, email_config)

@@ -8,16 +8,20 @@ from typing import Literal
 
 import structlog
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cabinet.auth.email_auth_gate import EMAIL_AUTH_ENABLED_KEY, is_email_auth_enabled
 from app.config import settings
 from app.database.crud.system_setting import get_setting_value
 from app.database.models import SystemSetting, User
+from app.services.gift_purchase_service import GIFT_ENABLED_KEY, is_gift_enabled
 
-from ..dependencies import get_cabinet_db, require_permission
+from ..dependencies import get_cabinet_db, get_current_cabinet_user, require_permission
+from ..utils import brand_monogram, favicon_tile
+from ..utils.brand_monogram import monogram_letter, monogram_svg
 
 
 logger = structlog.get_logger(__name__)
@@ -35,12 +39,10 @@ THEME_COLORS_KEY = 'CABINET_THEME_COLORS'  # Stores JSON with theme colors
 ENABLED_THEMES_KEY = 'CABINET_ENABLED_THEMES'  # Stores JSON with enabled themes {"dark": true, "light": false}
 ANIMATION_ENABLED_KEY = 'CABINET_ANIMATION_ENABLED'  # Stores "true" or "false"
 FULLSCREEN_ENABLED_KEY = 'CABINET_FULLSCREEN_ENABLED'  # Stores "true" or "false"
-EMAIL_AUTH_ENABLED_KEY = 'CABINET_EMAIL_AUTH_ENABLED'  # Stores "true" or "false"
 YANDEX_METRIKA_ID_KEY = 'CABINET_YANDEX_METRIKA_ID'  # Stores counter ID (numeric string)
 GOOGLE_ADS_ID_KEY = 'CABINET_GOOGLE_ADS_ID'  # Stores conversion ID (e.g. "AW-123456789")
 GOOGLE_ADS_LABEL_KEY = 'CABINET_GOOGLE_ADS_LABEL'  # Stores conversion label (alphanumeric)
 LITE_MODE_ENABLED_KEY = 'CABINET_LITE_MODE_ENABLED'  # Stores "true" or "false"
-GIFT_ENABLED_KEY = 'CABINET_GIFT_ENABLED'  # Stores "true" or "false"
 ADDITIONAL_OPTIONS_VISIBLE_KEY = 'CABINET_ADDITIONAL_OPTIONS_VISIBLE'  # Stores "true" or "false"
 ANIMATION_CONFIG_KEY = 'CABINET_ANIMATION_CONFIG'  # Stores JSON with animation config
 TELEGRAM_WIDGET_SIZE_KEY = 'TELEGRAM_WIDGET_SIZE'
@@ -159,6 +161,12 @@ ALLOWED_BG_TYPES = (
     'dots',
     'spotlight',
     'ripple',
+    'fireflies',
+    'snowfall',
+    'starfield',
+    'matrix-rain',
+    'liquid-gradient',
+    'constellation',
     'none',
 )
 
@@ -212,6 +220,12 @@ class AnimationConfigUpdate(BaseModel):
             'dots',
             'spotlight',
             'ripple',
+            'fireflies',
+            'snowfall',
+            'starfield',
+            'matrix-rain',
+            'liquid-gradient',
+            'constellation',
             'none',
         ]
         | None
@@ -304,12 +318,24 @@ class AdditionalOptionsVisibleUpdate(BaseModel):
     enabled: bool
 
 
+class OfflineConvGoal(BaseModel):
+    """Yandex Metrika offline conversion goal descriptor."""
+
+    name: str
+    event_id: str
+    dedup: str
+
+
 class AnalyticsCountersResponse(BaseModel):
     """Analytics counter settings."""
 
     yandex_metrika_id: str = ''
     google_ads_id: str = ''
     google_ads_label: str = ''
+    offline_conv_enabled: bool = False
+    offline_conv_counter_id: str = ''
+    offline_conv_measurement_secret_masked: str = ''
+    offline_conv_goals: list[OfflineConvGoal] = []
 
 
 class AnalyticsCountersUpdate(BaseModel):
@@ -381,6 +407,50 @@ def has_custom_logo() -> bool:
 # ============ Routes ============
 
 
+_LOGO_MEDIA_TYPES = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+}
+_LOGO_MAX_AGE_SECONDS = 3600
+# Фавикон живёт в <link rel="icon"> кабинета, а Safari перезапрашивает иконку
+# редко: кеш короткий, чтобы новый логотип из админки доехал без пересборки.
+_FAVICON_MAX_AGE_SECONDS = 300
+
+
+async def _resolve_branding_name(db: AsyncSession) -> str:
+    """Имя из настроек; фолбэк только если оно не задано вовсе (пустая строка — значение)."""
+    name = await get_setting_value(db, BRANDING_NAME_KEY)
+    if name is None:
+        name = getattr(settings, 'CABINET_BRANDING_NAME', None) or os.getenv('VITE_APP_NAME', 'Cabinet')
+    return name
+
+
+def _image_headers(max_age: int) -> dict[str, str]:
+    return {
+        'Cache-Control': f'public, max-age={max_age}',
+        # Одну и ту же картинку браузер запрашивает двумя способами: <link rel="icon">
+        # и <img> — без заголовка Origin, fetch() кабинета — с ним. CORS-заголовки
+        # появляются только в ответ на Origin, и без Vary кеш отдаёт fetch()
+        # ответ от no-cors запроса — браузер блокирует его как CORS-ошибку.
+        'Vary': 'Origin',
+        # The logo may be an SVG (admin-uploaded). Rendering via <img> never
+        # runs SVG scripts, but opening /branding/logo as a top-level document
+        # would. Block that XSS surface: nosniff + a sandboxed CSP that forbids
+        # script execution. CSP on this image response is ignored when loaded
+        # as an <img> subresource, so logo display is unaffected.
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    }
+
+
+def _logo_file_response(logo_path: Path, *, max_age: int) -> FileResponse:
+    media_type = _LOGO_MEDIA_TYPES.get(logo_path.suffix.lower(), 'image/png')
+    return FileResponse(logo_path, media_type=media_type, headers=_image_headers(max_age))
+
+
 @router.get('', response_model=BrandingResponse)
 async def get_branding(
     db: AsyncSession = Depends(get_cabinet_db),
@@ -389,21 +459,13 @@ async def get_branding(
     Get current branding settings.
     This is a public endpoint - no authentication required.
     """
-    # Get name from database or use default from env/settings
-    name = await get_setting_value(db, BRANDING_NAME_KEY)
-    if name is None:  # Only use fallback if not set at all (empty string is valid)
-        name = getattr(settings, 'CABINET_BRANDING_NAME', None) or os.getenv('VITE_APP_NAME', 'Cabinet')
-
-    # Check for custom logo
+    name = await _resolve_branding_name(db)
     custom_logo = has_custom_logo()
-
-    # Get first letter for logo fallback (use "V" if name is empty)
-    logo_letter = name[0].upper() if name else 'V'
 
     return BrandingResponse(
         name=name,
         logo_url='/cabinet/branding/logo' if custom_logo else None,
-        logo_letter=logo_letter,
+        logo_letter=monogram_letter(name),
         has_custom_logo=custom_logo,
     )
 
@@ -419,18 +481,190 @@ async def get_logo():
     if logo_path is None or not await asyncio.to_thread(logo_path.exists):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='No custom logo set')
 
-    # Determine media type from file extension
+    return _logo_file_response(logo_path, max_age=_LOGO_MAX_AGE_SECONDS)
+
+
+async def _logo_favicon_response(logo_path: Path) -> Response:
+    """Скруглённая плитка из логотипа (как в шапке кабинета); SVG и нечитаемый файл — как есть."""
+    if favicon_tile.is_raster_logo(logo_path):
+        try:
+            tile = await asyncio.to_thread(favicon_tile.cached_rounded_logo_tile, logo_path)
+        except Exception:
+            logger.warning(
+                'Не удалось скруглить плитку фавикона из логотипа, отдаём файл как есть',
+                path=str(logo_path),
+                exc_info=True,
+            )
+        else:
+            return Response(content=tile, media_type='image/png', headers=_image_headers(_FAVICON_MAX_AGE_SECONDS))
+    return _logo_file_response(logo_path, max_age=_FAVICON_MAX_AGE_SECONDS)
+
+
+@router.get('/favicon')
+async def get_favicon(
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Иконка для <link rel="icon"> кабинета: логотип из админки или монограмма.
+
+    Safari берёт фавикон только при первой загрузке страницы и не замечает
+    смену через JS (Chrome и Firefox замечают), поэтому статическая ссылка в
+    index.html кабинета ведёт сюда, а не на монограмму сборки. Никогда не 404:
+    на месте несуществующей иконки Safari показывает пустоту.
+
+    Монограмма — PNG, не SVG: SVG-фавикон Safari рисует монохромной плиткой с
+    буквой, теряя цвета. SVG остаётся запасным ответом, если PNG не отрисовался.
+    """
+    logo_path = get_logo_path()
+    if logo_path is not None and await asyncio.to_thread(logo_path.exists):
+        return await _logo_favicon_response(logo_path)
+
+    name = await _resolve_branding_name(db)
+    headers = _image_headers(_FAVICON_MAX_AGE_SECONDS)
+    try:
+        png = await asyncio.to_thread(brand_monogram.monogram_png, name)
+    except Exception:
+        logger.warning('Не удалось отрисовать PNG-монограмму фавикона, отдаём SVG', name=name, exc_info=True)
+        return Response(content=monogram_svg(name), media_type='image/svg+xml', headers=headers)
+    return Response(content=png, media_type='image/png', headers=headers)
+
+
+@router.get('/bot-logo')
+async def get_bot_logo():
+    """
+    Get the BOT's menu logo (settings.LOGO_FILE, e.g. vpn_logo.png).
+
+    Distinct from /logo (the cabinet WebApp branding logo uploaded via the admin
+    UI): this serves the same local file the bot attaches to photo-mode menus, so
+    the rich main menu can embed it by public URL (rich media accepts only
+    HTTP(S) URLs). Public like /logo. 404 if the file is missing.
+    """
+    logo_path = Path(settings.LOGO_FILE)
+
+    if not settings.LOGO_FILE or not await asyncio.to_thread(logo_path.is_file):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Bot logo is not configured')
+
     suffix = logo_path.suffix.lower()
     media_types = {
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
         '.webp': 'image/webp',
-        '.svg': 'image/svg+xml',
     }
     media_type = media_types.get(suffix, 'image/png')
 
-    return FileResponse(logo_path, media_type=media_type, headers={'Cache-Control': 'public, max-age=3600'})
+    return FileResponse(
+        logo_path,
+        media_type=media_type,
+        headers={
+            'Cache-Control': 'public, max-age=3600',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        },
+    )
+
+
+class BotStartVideoResponse(BaseModel):
+    """Состояние видео стартового меню бота."""
+
+    has_video: bool
+    file_id: str | None = None
+
+
+@router.get('/bot-start-video', response_model=BotStartVideoResponse)
+async def get_bot_start_video(
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Текущее видео стартового меню бота (Telegram file_id)."""
+    from app.services.start_media_service import get_start_video_file_id
+
+    file_id = await get_start_video_file_id(db)
+    return BotStartVideoResponse(has_video=bool(file_id), file_id=file_id)
+
+
+@router.post('/bot-start-video', response_model=BotStartVideoResponse)
+async def upload_bot_start_video(
+    file: UploadFile = File(...),
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Загружает видео, которое бот прикрепляет к стартовому меню.
+
+    Файл один раз отправляется в Telegram, чтобы получить ``file_id``: дальше
+    меню уходит по нему мгновенно и без повторной загрузки (тот же приём, что
+    в ``/cabinet/media/upload``). Сам файл у нас не хранится.
+    """
+    content_type = (file.content_type or '').lower()
+    if not content_type.startswith('video/'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid file type. Expected a video')
+
+    max_bytes = settings.MEDIA_MAX_VIDEO_SIZE_MB * 1024 * 1024
+    # Читаем на байт больше лимита — чтобы отличить «ровно лимит» от «больше».
+    content = await file.read(max_bytes + 1)
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Empty file')
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'File too large. Maximum size: {settings.MEDIA_MAX_VIDEO_SIZE_MB} MB',
+        )
+
+    from aiogram.types import BufferedInputFile
+
+    from app.bot_factory import create_bot
+    from app.cabinet.routes.media import _resolve_target_chat_id
+    from app.services.start_media_service import set_start_video_file_id
+
+    target_chat_id = _resolve_target_chat_id()
+    bot = create_bot()
+    try:
+        message = await bot.send_video(
+            chat_id=target_chat_id,
+            video=BufferedInputFile(content, filename=file.filename or 'start_video.mp4'),
+            disable_notification=True,
+        )
+        file_id = message.video.file_id if message.video else None
+        # Промежуточное сообщение удаляем — file_id живёт и после удаления.
+        try:
+            await bot.delete_message(chat_id=target_chat_id, message_id=message.message_id)
+        except Exception as delete_error:
+            # Не критично: file_id уже получен, видео загружено. Останется лишнее
+            # сообщение в служебном чате — это не повод валить загрузку.
+            logger.debug(
+                'Не удалось удалить промежуточное сообщение с видео',
+                message_id=message.message_id,
+                error=str(delete_error),
+            )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error('Не удалось загрузить видео стартового меню в Telegram', error=str(error))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Telegram rejected the video',
+        ) from error
+    finally:
+        await bot.session.close()
+
+    if not file_id:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Telegram returned no file_id')
+
+    await set_start_video_file_id(db, file_id)
+    logger.info('Видео стартового меню обновлено', admin_id=admin.id)
+    return BotStartVideoResponse(has_video=True, file_id=file_id)
+
+
+@router.delete('/bot-start-video', response_model=BotStartVideoResponse)
+async def delete_bot_start_video(
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Убирает видео — меню возвращается к фото-логотипу/тексту."""
+    from app.services.start_media_service import set_start_video_file_id
+
+    await set_start_video_file_id(db, None)
+    logger.info('Видео стартового меню удалено', admin_id=admin.id)
+    return BotStartVideoResponse(has_video=False, file_id=None)
 
 
 @router.put('/name', response_model=BrandingResponse)
@@ -846,20 +1080,10 @@ async def get_email_auth_enabled(
     """
     Get email auth enabled setting.
     This is a public endpoint - no authentication required.
-    Controls whether email registration/login is available.
+    Тот же резолвер, что гейтит email-роуты: кнопка и API не расходятся.
     """
-    email_auth_value = await get_setting_value(db, EMAIL_AUTH_ENABLED_KEY)
-
-    if email_auth_value is not None:
-        enabled = email_auth_value.lower() == 'true'
-        return EmailAuthEnabledResponse(
-            enabled=enabled,
-            verification_enabled=settings.is_cabinet_email_verification_enabled(),
-        )
-
-    # Default: check config setting
     return EmailAuthEnabledResponse(
-        enabled=settings.is_cabinet_email_auth_enabled(),
+        enabled=await is_email_auth_enabled(db),
         verification_enabled=settings.is_cabinet_email_verification_enabled(),
     )
 
@@ -937,10 +1161,27 @@ async def get_analytics_counters(
     google_id = await get_setting_value(db, GOOGLE_ADS_ID_KEY) or ''
     google_label = await get_setting_value(db, GOOGLE_ADS_LABEL_KEY) or ''
 
+    # Yandex Metrika offline conversions snapshot from Settings
+    oc_enabled = bool(getattr(settings, 'YANDEX_OFFLINE_CONV_ENABLED', False))
+    oc_counter = str(getattr(settings, 'YANDEX_OFFLINE_CONV_COUNTER_ID', '') or '')
+    oc_secret = str(getattr(settings, 'YANDEX_OFFLINE_CONV_MEASUREMENT_SECRET', '') or '')
+    oc_secret_masked = ('*' * 8 + oc_secret[-4:]) if len(oc_secret) > 4 else ('***' if oc_secret else '')
+    oc_goals: list[OfflineConvGoal] = []
+    if oc_enabled:
+        oc_goals = [
+            OfflineConvGoal(name='Registration', event_id='registration', dedup='user_id'),
+            OfflineConvGoal(name='Trial', event_id='trial-add', dedup='user_id'),
+            OfflineConvGoal(name='Purchase', event_id='purchase', dedup='order_id'),
+        ]
+
     return AnalyticsCountersResponse(
         yandex_metrika_id=yandex_id,
         google_ads_id=google_id,
         google_ads_label=google_label,
+        offline_conv_enabled=oc_enabled,
+        offline_conv_counter_id=oc_counter,
+        offline_conv_measurement_secret_masked=oc_secret_masked,
+        offline_conv_goals=oc_goals,
     )
 
 
@@ -979,11 +1220,54 @@ async def update_analytics_counters(
     google_id = await get_setting_value(db, GOOGLE_ADS_ID_KEY) or ''
     google_label = await get_setting_value(db, GOOGLE_ADS_LABEL_KEY) or ''
 
+    oc_enabled = bool(getattr(settings, 'YANDEX_OFFLINE_CONV_ENABLED', False))
+    oc_counter = str(getattr(settings, 'YANDEX_OFFLINE_CONV_COUNTER_ID', '') or '')
+    oc_secret = str(getattr(settings, 'YANDEX_OFFLINE_CONV_MEASUREMENT_SECRET', '') or '')
+    oc_secret_masked = ('*' * 8 + oc_secret[-4:]) if len(oc_secret) > 4 else ('***' if oc_secret else '')
+    oc_goals: list[OfflineConvGoal] = []
+    if oc_enabled:
+        oc_goals = [
+            OfflineConvGoal(name='Registration', event_id='registration', dedup='user_id'),
+            OfflineConvGoal(name='Trial', event_id='trial-add', dedup='user_id'),
+            OfflineConvGoal(name='Purchase', event_id='purchase', dedup='order_id'),
+        ]
+
     return AnalyticsCountersResponse(
         yandex_metrika_id=yandex_id,
         google_ads_id=google_id,
         google_ads_label=google_label,
+        offline_conv_enabled=oc_enabled,
+        offline_conv_counter_id=oc_counter,
+        offline_conv_measurement_secret_masked=oc_secret_masked,
+        offline_conv_goals=oc_goals,
     )
+
+
+# ============ Yandex CID Sync ============
+
+
+class YandexCidRequest(BaseModel):
+    cid: str = Field(max_length=128, pattern=r'^[A-Za-z0-9._:-]{4,128}$')
+
+
+@router.post('/analytics/yandex-cid', status_code=204)
+async def store_yandex_cid(
+    body: YandexCidRequest,
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Store Yandex Metrika ClientID for the authenticated cabinet user."""
+    try:
+        from app.services import yandex_offline_conv_service as yandex_conv
+
+        await yandex_conv.store_cid(db, user.id, body.cid, source='cabinet')
+        await db.commit()
+    except Exception as exc:
+        logger.warning('Failed to store yandex_cid', user_id=user.id, exc=str(exc))
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 # ============ Lite Mode Routes ============
@@ -1030,11 +1314,8 @@ async def get_gift_enabled(
     db: AsyncSession = Depends(get_cabinet_db),
 ):
     """Get gift feature enabled setting. Public endpoint."""
-    value = await get_setting_value(db, GIFT_ENABLED_KEY)
-    if value is not None:
-        enabled = value.lower() == 'true'
-        return GiftEnabledResponse(enabled=enabled)
-    return GiftEnabledResponse(enabled=False)
+    enabled = await is_gift_enabled(db)
+    return GiftEnabledResponse(enabled=enabled)
 
 
 @router.patch('/gift-enabled', response_model=GiftEnabledResponse)
@@ -1074,3 +1355,43 @@ async def update_additional_options_visible(
     await set_setting_value(db, ADDITIONAL_OPTIONS_VISIBLE_KEY, str(payload.enabled).lower())
     logger.info('Admin set additional options visible', telegram_id=admin.telegram_id, enabled=payload.enabled)
     return AdditionalOptionsVisibleResponse(enabled=payload.enabled)
+
+
+# ============ Legal Footer Routes (custom patch) ============
+
+FOOTER_ENABLED_KEY = 'CABINET_FOOTER_ENABLED'  # Stores "true" or "false"
+
+
+class FooterEnabledResponse(BaseModel):
+    """Legal footer enabled setting."""
+
+    enabled: bool = True
+
+
+class FooterEnabledUpdate(BaseModel):
+    """Request to update legal footer setting."""
+
+    enabled: bool
+
+
+@router.get('/footer-enabled', response_model=FooterEnabledResponse)
+async def get_footer_enabled(
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Get legal footer enabled setting. Public endpoint - no authentication required."""
+    value = await get_setting_value(db, FOOTER_ENABLED_KEY)
+    if value is not None:
+        return FooterEnabledResponse(enabled=value.lower() == 'true')
+    return FooterEnabledResponse(enabled=True)
+
+
+@router.patch('/footer-enabled', response_model=FooterEnabledResponse)
+async def update_footer_enabled(
+    payload: FooterEnabledUpdate,
+    admin: User = Depends(require_permission('settings:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Update legal footer enabled setting. Admin only."""
+    await set_setting_value(db, FOOTER_ENABLED_KEY, str(payload.enabled).lower())
+    logger.info('Admin set footer enabled', telegram_id=admin.telegram_id, enabled=payload.enabled)
+    return FooterEnabledResponse(enabled=payload.enabled)

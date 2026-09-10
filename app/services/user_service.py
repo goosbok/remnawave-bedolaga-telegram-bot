@@ -70,6 +70,8 @@ class DeleteUserResult:
     bot_deleted: bool = False
     panel_deleted: bool = False
     panel_error: str | None = None
+    # Удаление отклонено guard'ом открытого grace-доступа (HTTP-слой мапит в 409)
+    grace_blocked: bool = False
 
 
 class UserService:
@@ -605,7 +607,7 @@ class UserService:
             await db.refresh(user)
 
             logger.info(
-                "👥 Промогруппа пользователя обновлена на ''",
+                '👥 Промогруппа пользователя обновлена',
                 telegram_id=user.telegram_id,
                 promo_group_name=promo_group.name,
             )
@@ -679,6 +681,16 @@ class UserService:
             if not user:
                 return False
 
+            from app.services.rbac_bootstrap_service import is_protected_from_blocking
+
+            if is_protected_from_blocking(user):
+                logger.warning(
+                    'Отказ в блокировке: аккаунт прописан в ADMIN_IDS/ADMIN_EMAILS',
+                    admin_id=admin_id,
+                    user_id=user_id,
+                )
+                return False
+
             from app.database.crud.subscription import deactivate_subscription, is_active_paid_subscription
 
             subs = getattr(user, 'subscriptions', None) or []
@@ -688,7 +700,7 @@ class UserService:
                 logger.info(
                     '⏭️ Пропуск отключения RemnaWave и подписки: у пользователя активная оплаченная подписка',
                     user_id=user_id,
-                    remnawave_uuid=user.remnawave_uuid,
+                    remnawave_id=user.remnawave_id,
                 )
             else:
                 from app.services.subscription_service import SubscriptionService
@@ -698,13 +710,13 @@ class UserService:
                 if settings.is_multi_tariff_enabled():
                     # In multi-tariff mode, disable each subscription's panel user individually
                     for sub in subs:
-                        panel_uuid = sub.remnawave_uuid
-                        if panel_uuid:
+                        panel_user_id = sub.remnawave_id
+                        if panel_user_id:
                             try:
-                                await subscription_service.disable_remnawave_user(panel_uuid)
+                                await subscription_service.disable_remnawave_user(panel_user_id)
                                 logger.info(
                                     '✅ RemnaWave пользователь деактивирован при блокировке',
-                                    remnawave_uuid=panel_uuid,
+                                    remnawave_id=panel_user_id,
                                     subscription_id=sub.id,
                                 )
                             except Exception as e:
@@ -713,12 +725,12 @@ class UserService:
                                     error=e,
                                     subscription_id=sub.id,
                                 )
-                elif user.remnawave_uuid:
+                elif user.remnawave_id:
                     try:
-                        await subscription_service.disable_remnawave_user(user.remnawave_uuid)
+                        await subscription_service.disable_remnawave_user(user.remnawave_id)
                         logger.info(
                             '✅ RemnaWave пользователь деактивирован при блокировке',
-                            remnawave_uuid=user.remnawave_uuid,
+                            remnawave_id=user.remnawave_id,
                         )
                     except Exception as e:
                         logger.error('❌ Ошибка деактивации RemnaWave пользователя при блокировке', error=e)
@@ -758,9 +770,7 @@ class UserService:
                         logger.info(
                             '✅ RemnaWave подписка восстановлена при разблокировке',
                             subscription_id=sub.id,
-                            remnawave_uuid=sub.remnawave_uuid
-                            if settings.is_multi_tariff_enabled()
-                            else user.remnawave_uuid,
+                            remnawave_id=sub.remnawave_id if settings.is_multi_tariff_enabled() else user.remnawave_id,
                         )
                     except Exception as e:
                         logger.error(
@@ -768,6 +778,14 @@ class UserService:
                             subscription_id=sub.id,
                             error=e,
                         )
+                        from app.services.remnawave_retry_queue import remnawave_retry_queue
+
+                        if hasattr(sub, 'id') and hasattr(sub, 'user_id'):
+                            remnawave_retry_queue.enqueue(
+                                subscription_id=sub.id,
+                                user_id=sub.user_id,
+                                action='update',
+                            )
             await db.commit()
 
             logger.info('Админ разблокировал пользователя', admin_id=admin_id, user_id=user_id)
@@ -794,21 +812,67 @@ class UserService:
                 return result
 
             user_id_display = user.telegram_id or user.email or f'#{user.id}'
-            logger.info(
-                '🗑️ Начинаем полное удаление пользователя (ID: )', user_id=user_id, user_id_display=user_id_display
-            )
+            logger.info('🗑️ Начинаем полное удаление пользователя', user_id=user_id, user_id_display=user_id_display)
 
             from app.config import settings
             from app.database.crud.subscription import is_active_paid_subscription
 
-            # Collect all panel UUIDs to process
+            # Collect all panel user ids to process
             subs = getattr(user, 'subscriptions', None) or []
-            if settings.is_multi_tariff_enabled():
-                panel_uuids = [sub.remnawave_uuid for sub in subs if sub.remnawave_uuid]
-            else:
-                panel_uuids = [user.remnawave_uuid] if user.remnawave_uuid else []
+            from app.services.grace_access_runtime import (
+                GraceAccessDeletionBlocked,
+                ensure_no_open_grace_for_subscriptions,
+            )
 
-            if panel_uuids:
+            try:
+                await ensure_no_open_grace_for_subscriptions(db, tuple(sub.id for sub in subs))
+            except GraceAccessDeletionBlocked as error:
+                result.panel_error = str(error)
+                result.grace_blocked = True
+                logger.warning(
+                    'User deletion blocked until grace access is restored',
+                    user_id=user_id,
+                    subscription_ids=error.subscription_ids,
+                )
+                return result
+
+            # Best-effort: stop Platega SBP autopay for every subscription of
+            # this user before the row disappears — the platega_subscriptions
+            # record CASCADE-deletes with its subscription, so cancelling
+            # after the delete would find nothing to cancel on Platega's side
+            # and the user keeps getting charged for a deleted account.
+            # NOTE: each cancellation commits its own transaction internally,
+            # which releases the grace-guard's Postgres advisory lock
+            # acquired just above. It therefore runs BEFORE the panel
+            # deletion/deactivation below (the first irreversible step in
+            # this flow), and the guard is re-acquired immediately after —
+            # closing that window before anything that can't be undone
+            # happens.
+            from app.services.payment.lava import cancel_lava_recurring_for_subscription_safe
+            from app.services.payment.platega import cancel_platega_recurring_for_subscription_safe
+
+            for sub in subs:
+                await cancel_platega_recurring_for_subscription_safe(db, sub.id)
+
+                await cancel_lava_recurring_for_subscription_safe(db, sub.id)
+            try:
+                await ensure_no_open_grace_for_subscriptions(db, tuple(sub.id for sub in subs))
+            except GraceAccessDeletionBlocked as error:
+                result.panel_error = str(error)
+                result.grace_blocked = True
+                logger.warning(
+                    'User deletion blocked until grace access is restored',
+                    user_id=user_id,
+                    subscription_ids=error.subscription_ids,
+                )
+                return result
+
+            if settings.is_multi_tariff_enabled():
+                panel_user_ids = [sub.remnawave_id for sub in subs if sub.remnawave_id]
+            else:
+                panel_user_ids = [user.remnawave_id] if user.remnawave_id else []
+
+            if panel_user_ids:
                 if not force_panel_delete and any(is_active_paid_subscription(sub) for sub in subs):
                     logger.info(
                         '⏭️ Пропуск отключения RemnaWave при удалении: у пользователя активная оплаченная подписка',
@@ -817,17 +881,17 @@ class UserService:
                 else:
                     delete_mode = 'delete' if force_panel_delete else settings.get_remnawave_user_delete_mode()
 
-                    # Помечаем ВСЕ UUID до цикла, чтобы webhook от первого удаления
-                    # не пришёл раньше чем помечены остальные
+                    # Помечаем ВСЕ панельные id до цикла, чтобы webhook от первого
+                    # удаления не пришёл раньше чем помечены остальные
                     if delete_mode == 'delete':
                         from app.services.remnawave_webhook_service import RemnaWaveWebhookService
 
                         RemnaWaveWebhookService.mark_intentional_panel_deletion(
-                            panel_uuids=panel_uuids,
+                            panel_user_ids=panel_user_ids,
                             telegram_id=int(user.telegram_id) if user.telegram_id else None,
                         )
 
-                    for panel_uuid in panel_uuids:
+                    for panel_user_id in panel_user_ids:
                         try:
                             from app.services.remnawave_service import RemnaWaveService
 
@@ -835,45 +899,56 @@ class UserService:
 
                             if delete_mode == 'delete':
                                 async with remnawave_service.get_api_client() as api:
-                                    delete_success = await api.delete_user(panel_uuid)
-                                    if delete_success:
-                                        result.panel_deleted = True
-                                        logger.info(
-                                            '✅ RemnaWave пользователь удален из панели',
-                                            remnawave_uuid=panel_uuid,
-                                        )
-                                    else:
-                                        result.panel_error = 'Remnawave API вернул ошибку удаления'
-                                        logger.warning(
-                                            '⚠️ Не удалось удалить пользователя из панели Remnawave',
-                                            remnawave_uuid=panel_uuid,
-                                        )
+                                    # 3.0.0: DELETE отвечает 204/202 без тела, поля isDeleted
+                                    # больше нет — успех это отсутствие исключения.
+                                    await api.delete_user(panel_user_id)
+                                    result.panel_deleted = True
+                                    logger.info(
+                                        '✅ RemnaWave пользователь удален из панели',
+                                        remnawave_id=panel_user_id,
+                                    )
                             else:
                                 from app.services.subscription_service import SubscriptionService
 
                                 subscription_service = SubscriptionService()
-                                disabled = await subscription_service.disable_remnawave_user(panel_uuid)
+                                disabled = await subscription_service.disable_remnawave_user(panel_user_id, db=db)
                                 result.panel_deleted = disabled
                                 if disabled:
                                     logger.info(
                                         '✅ RemnaWave пользователь деактивирован',
-                                        remnawave_uuid=panel_uuid,
+                                        remnawave_id=panel_user_id,
                                         delete_mode=delete_mode,
                                     )
                                 else:
                                     result.panel_error = 'disable_remnawave_user вернул False'
                                     logger.warning(
                                         '⚠️ Не удалось деактивировать пользователя в RemnaWave',
-                                        remnawave_uuid=panel_uuid,
+                                        remnawave_id=panel_user_id,
                                         delete_mode=delete_mode,
                                     )
 
                         except Exception as e:
+                            from app.external.remnawave_api import RemnaWaveAPIError, is_user_not_found_error
+
+                            # Панель уже не знает такого пользователя — цель достигнута.
+                            # Fallback-деактивация по несуществующему id гарантированно
+                            # провалится и покажет админу ошибку на успешном удалении.
+                            # RemnaWaveInvalidUserIdError сюда НЕ попадает (битая ссылка
+                            # в БД бота — не «пользователя нет»), уходит в общую ветку.
+                            if isinstance(e, RemnaWaveAPIError) and is_user_not_found_error(e):
+                                result.panel_deleted = True
+                                logger.info(
+                                    'ℹ️ RemnaWave пользователь уже отсутствует в панели',
+                                    remnawave_id=panel_user_id,
+                                    delete_mode=delete_mode,
+                                )
+                                continue
+
                             result.panel_error = 'Ошибка обработки пользователя в Remnawave'
                             logger.warning(
                                 '⚠️ Ошибка обработки пользователя в Remnawave',
                                 delete_mode=delete_mode,
-                                remnawave_uuid=panel_uuid,
+                                remnawave_id=panel_user_id,
                                 error=e,
                             )
                             if delete_mode == 'delete':
@@ -881,13 +956,13 @@ class UserService:
                                     from app.services.subscription_service import SubscriptionService
 
                                     subscription_service = SubscriptionService()
-                                    disabled = await subscription_service.disable_remnawave_user(panel_uuid)
+                                    disabled = await subscription_service.disable_remnawave_user(panel_user_id, db=db)
                                     if disabled:
                                         result.panel_deleted = True
                                         result.panel_error = 'Удаление не удалось, пользователь деактивирован'
                                         logger.info(
                                             '✅ RemnaWave пользователь деактивирован как fallback',
-                                            remnawave_uuid=panel_uuid,
+                                            remnawave_id=panel_user_id,
                                         )
                                 except Exception as fallback_e:
                                     logger.error('❌ Ошибка деактивации RemnaWave как fallback', fallback_e=fallback_e)
@@ -1146,6 +1221,73 @@ class UserService:
             except Exception as e:
                 logger.error('❌ Ошибка удаления KassaAi платежей', error=e)
 
+            # Платёжные провайдеры, которые ссылаются на transactions через FK без ON DELETE,
+            # но раньше не очищались в этом блоке. Без них DELETE FROM transactions падал с
+            # ForeignKeyViolationError (например, rollypay_payments_transaction_id_fkey).
+            from app.database.models import (
+                AntilopayPayment,
+                AppleTransaction,
+                AuraPayPayment,
+                CisPayPayment,
+                DonutPayment,
+                EtoplatezhiPayment,
+                JupiterPayment,
+                LavaPayment,
+                OverpayPayment,
+                ParityPayPayment,
+                PayPearPayment,
+                RioPayPayment,
+                RollyPayPayment,
+                SeverPayPayment,
+                TabPayPayment,
+            )
+
+            extra_payment_models = (
+                RioPayPayment,
+                RollyPayPayment,
+                SeverPayPayment,
+                PayPearPayment,
+                OverpayPayment,
+                AuraPayPayment,
+                EtoplatezhiPayment,
+                AntilopayPayment,
+                JupiterPayment,
+                DonutPayment,
+                LavaPayment,
+                CisPayPayment,
+                TabPayPayment,
+                ParityPayPayment,
+            )
+            for model in extra_payment_models:
+                try:
+                    async with db.begin_nested():
+                        await db.execute(update(model).where(model.user_id == user_id).values(transaction_id=None))
+                        await db.flush()
+                        await db.execute(delete(model).where(model.user_id == user_id))
+                        await db.flush()
+                except Exception as error:
+                    logger.error(
+                        '❌ Ошибка удаления платежей провайдера',
+                        provider=model.__tablename__,
+                        error=str(error),
+                    )
+
+            # Apple IAP: FK поле называется transaction_id_fk (не transaction_id),
+            # поэтому отдельным блоком. user_id имеет CASCADE на users, но это сработает
+            # позже при DELETE User — а DELETE Transaction раньше падал бы из-за FK на apple_transactions.
+            try:
+                async with db.begin_nested():
+                    await db.execute(
+                        update(AppleTransaction)
+                        .where(AppleTransaction.user_id == user_id)
+                        .values(transaction_id_fk=None)
+                    )
+                    await db.flush()
+                    await db.execute(delete(AppleTransaction).where(AppleTransaction.user_id == user_id))
+                    await db.flush()
+            except Exception as error:
+                logger.error('❌ Ошибка удаления Apple IAP платежей', error=str(error))
+
             try:
                 async with db.begin_nested():
                     transactions_result = await db.execute(select(Transaction).where(Transaction.user_id == user_id))
@@ -1290,14 +1432,13 @@ class UserService:
                     AccessPolicy,
                     AdminAuditLog,
                     AdminRole,
-                    RioPayPayment,
                     SavedPaymentMethod,
                     UserRole,
                     WithdrawalRequest,
                 )
 
                 await db.execute(delete(SavedPaymentMethod).where(SavedPaymentMethod.user_id == user_id))
-                await db.execute(delete(RioPayPayment).where(RioPayPayment.user_id == user_id))
+                # RioPayPayment удаляется выше в extra_payment_models — здесь дубликат не нужен.
                 await db.execute(delete(AdminAuditLog).where(AdminAuditLog.user_id == user_id))
                 await db.execute(delete(WithdrawalRequest).where(WithdrawalRequest.user_id == user_id))
                 await db.execute(
@@ -1316,7 +1457,7 @@ class UserService:
 
             result.bot_deleted = True
             logger.info(
-                '✅ Пользователь (ID: ) полностью удален администратором',
+                '✅ Пользователь полностью удалён администратором',
                 user_id_display=user_id_display,
                 user_id=user_id,
                 admin_id=admin_id,

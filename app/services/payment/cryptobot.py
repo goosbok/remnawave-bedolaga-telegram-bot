@@ -253,7 +253,7 @@ class CryptoBotPaymentMixin:
                     amount_kopeks = int(amount_rubles_rounded * 100)
                     conversion_rate = amount_rubles / amount_usd if amount_usd > 0 else 0
                     logger.info(
-                        'Конвертация USD->RUB: $ -> ₽ (округлено до ₽, курс:)',
+                        'Конвертация USD->RUB',
                         amount_usd=amount_usd,
                         amount_rubles=amount_rubles,
                         amount_rubles_rounded=amount_rubles_rounded,
@@ -371,14 +371,15 @@ class CryptoBotPaymentMixin:
                             f'🆔 Транзакция: {invoice_id[:8]}...\n\n'
                             'Баланс пополнен автоматически!'
                         )
-                        user_notification = _UserNotificationPayload(
-                            telegram_id=user.telegram_id,
-                            text=message_text,
-                            parse_mode='HTML',
-                            reply_markup=keyboard,
-                            amount_rubles=amount_rubles_rounded,
-                            asset=updated_payment.asset,
-                        )
+                        if settings.is_notifications_enabled():
+                            user_notification = _UserNotificationPayload(
+                                telegram_id=user.telegram_id,
+                                text=message_text,
+                                parse_mode='HTML',
+                                reply_markup=keyboard,
+                                amount_rubles=amount_rubles_rounded,
+                                asset=updated_payment.asset,
+                            )
                     except Exception as error:
                         logger.error('Ошибка подготовки уведомления о пополнении CryptoBot', error=error)
 
@@ -636,6 +637,9 @@ class CryptoBotPaymentMixin:
                 logger.error('Ошибка отправки админ-уведомления о пополнении CryptoBot', error=error, exc_info=True)
 
     async def _deliver_user_topup_notification(self, payload: _UserNotificationPayload) -> None:
+        if not settings.is_notifications_enabled():
+            return
+
         bot_instance = getattr(self, 'bot', None)
         if not bot_instance:
             return

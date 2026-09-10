@@ -43,7 +43,7 @@ async def cleanup_duplicate_subscriptions(db: AsyncSession) -> int:
             await db.delete(old_subscription)
             total_deleted += 1
             logger.info(
-                '🗑️ Удалена дублирующаяся подписка ID пользователя',
+                '🗑️ Удалена дублирующаяся подписка',
                 old_subscription_id=old_subscription.id,
                 user_id=user_id,
             )
@@ -111,6 +111,55 @@ def convert_subscription_link_to_happ_scheme(subscription_link: str | None) -> s
         return subscription_link
 
     return urlunparse(parsed_link._replace(scheme='happ'))
+
+
+def device_limit_needs_heal(value: int | None) -> bool:
+    """Return True if a stored ``device_limit`` is structurally invalid.
+
+    ``0`` is a legitimate "unlimited devices" state synced from RemnaWave
+    (see :func:`coerce_panel_device_limit`) and must NOT be healed back to
+    ``1`` — that was the original sync bug (every heal pass reverted
+    unlimited-device subscriptions). Only ``None`` and negative values are
+    truly broken.
+    """
+    return value is None or value < 0
+
+
+def coerce_panel_device_limit(value: object, default: int = 1) -> int:
+    """Normalize ``hwidDeviceLimit`` from a RemnaWave panel response.
+
+    The panel returns ``0`` to signal HWID limit disabled (unlimited devices).
+    A naive ``value or default`` collapses that ``0`` into the fallback and
+    silently overwrites unlimited-device subscriptions on every sync.
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int) and value >= 0:
+        return value
+    return default
+
+
+def resolve_min_device_limit(tariff: object | None = None) -> int:
+    """Нижняя граница, до которой пользователь может уменьшить лимит устройств.
+
+    По умолчанию (``ALLOW_DEVICES_BELOW_TARIFF_LIMIT=False``) опустить лимит
+    ниже включённого в тариф нельзя: уменьшают почти всегда не ради
+    самоограничения, а чтобы платить меньше — либо промахиваются и потом
+    спрашивают в поддержке, почему устройств меньше, чем положено по тарифу.
+
+    Вне тарифного режима (тариф не передан / у него нет лимита) граница — 1,
+    как и раньше.
+    """
+    from app.config import settings
+
+    if settings.ALLOW_DEVICES_BELOW_TARIFF_LIMIT:
+        return 1
+
+    tariff_devices = getattr(tariff, 'device_limit', None) if tariff is not None else None
+    try:
+        return max(1, int(tariff_devices or 0))
+    except (TypeError, ValueError):
+        return 1
 
 
 def resolve_hwid_device_limit(subscription: Subscription | None) -> int | None:

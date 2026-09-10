@@ -66,6 +66,10 @@ class RenewalPricing:
     servers_price: int  # kopeks
     traffic_price: int  # kopeks
     devices_price: int  # kopeks
+    # Total discount NOT from the personal one-shot offer (i.e. whichever of the
+    # tariff's own built-in discount or the promo-group's discount actually applied
+    # — see breakdown['base_discount_source'] in tariff mode to tell which one it was;
+    # this field alone does not distinguish them).
     promo_group_discount: int  # kopeks deducted
     promo_offer_discount: int  # kopeks deducted
     final_total: int  # kopeks — amount to charge
@@ -759,6 +763,7 @@ class PricingEngine:
                 group_pct=period_pct if base_source == 'group' else 0,
                 offer_pct=offer_pct,
                 winning_source=base_source,
+                discount_value_source=base_source,
                 final_base_price=discounted_base / 100,
             )
 

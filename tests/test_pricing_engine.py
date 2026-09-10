@@ -922,6 +922,93 @@ class TestCalculateRenewalPriceTariffMode:
         assert result.breakdown['tariff_period_discount_pct'] == 20  # informational, unaffected by who won
         assert result.promo_offer_discount == 420000 - 168000
 
+    @pytest.mark.asyncio
+    async def test_tariff_own_discount_wins_when_user_has_no_promo_group(self):
+        """The most common real-world 'max' mode case: a user with no promo group at
+        all, on a tariff with its own built-in annual discount. The tariff's own price
+        must apply (as always), reported with base_discount_source='tariff', and
+        group_discount_pct must show 0% (there's no group to attribute it to) even
+        though promo_group_discount carries the tariff's own discount value — this
+        is the documented, intentional 'total non-offer discount' semantics of that
+        field, not a bug."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 14
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 35000, '360': 336000}  # 20% built-in
+        subscription.tariff.device_limit = 2
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 14
+        subscription.tariff.is_daily = False
+        subscription.tariff.can_purchase_custom_days.return_value = False
+        subscription.device_limit = 2
+        user = MagicMock()
+        user.promo_group = None
+        user.get_primary_promo_group.return_value = None  # no promo group at all
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=0),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 360, user=user)
+        assert result.final_total == 336000  # tariff's own price — unchanged from today's behavior
+        assert result.base_price == 336000
+        assert result.breakdown['base_discount_source'] == 'tariff'
+        assert result.breakdown['group_discount_pct']['period'] == 0
+        assert result.breakdown['tariff_period_discount_pct'] == 20
+        # promo_group_discount carries the tariff's own discount value by design
+        # (see RenewalPricing.promo_group_discount's docstring/comment) — 420000-336000.
+        assert result.promo_group_discount == 84000
+
+    @pytest.mark.asyncio
+    async def test_max_mode_with_custom_days_period(self):
+        """Custom-days purchases (not a standard 30/90/180/360 period) must not crash
+        under the new 3-way logic, even though `months` is only an approximation
+        (max(1, round(days/30))) for such periods."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 14
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 35000, '360': 336000}
+        subscription.tariff.device_limit = 2
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 14
+        subscription.tariff.is_daily = False
+        subscription.tariff.can_purchase_custom_days.return_value = True
+        subscription.tariff.get_price_for_custom_days.return_value = 60000  # 200 days, tariff's own custom price
+        subscription.device_limit = 2
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 40
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=0),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 200, user=user)
+        # No crash, and a well-formed result. Observed values (months=7 from
+        # calculate_months_from_days(200), nominal_base=35000*7=245000): the tariff's
+        # own custom-days price (60000) beats even the 40%-off-nominal group price
+        # (147000), so the tariff wins outright. The `months` approximation (200 days
+        # rounds to 7 months, not ~6.67) inflates nominal_base relative to the actual
+        # period, which widens the tariff's apparent discount pct below — a
+        # pre-existing characteristic of calculate_months_from_days, not a bug
+        # introduced by this feature.
+        assert result.final_total > 0
+        assert result.breakdown['base_discount_source'] in ('tariff', 'group', 'offer')
+        assert result.final_total == 60000
+        assert result.base_price == 60000
+        assert result.breakdown['base_discount_source'] == 'tariff'
+        assert result.breakdown['group_discount_pct']['period'] == 0
+        assert result.breakdown['tariff_period_discount_pct'] == 76
+        assert result.promo_group_discount == 185000
+
 
 class TestCalculateRenewalPriceClassicMode:
     @pytest.mark.asyncio

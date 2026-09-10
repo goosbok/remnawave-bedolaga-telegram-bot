@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import os
 import sys
+import tempfile
 import types
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,14 @@ sys.path.insert(0, str(project_root))
 os.environ.setdefault('DATABASE_MODE', 'postgresql')
 os.environ.setdefault('DATABASE_URL', 'postgresql+asyncpg://user:pass@localhost/test_db')
 os.environ.setdefault('BOT_TOKEN', 'test-token')
+# app.services.backup_service.BackupService() (module-level singleton) mkdir()s
+# settings.BACKUP_LOCATION at import time — defaulting to /app/data/backups, the
+# container path, which doesn't exist (and can't be created) outside Docker. Any
+# test module that transitively imports app.cabinet.routes or app.handlers.admin
+# hits this. Must be set here, before the FIRST import of app.config anywhere in
+# the whole test run — app.config.settings is a module-level singleton, so once
+# any test file imports it, the env var can no longer change its value.
+os.environ.setdefault('BACKUP_LOCATION', os.path.join(tempfile.gettempdir(), 'bedolaga-test-backups'))
 
 # Создаём заглушки для драйверов, которых может не быть в окружении тестов.
 sys.modules.setdefault('asyncpg', types.ModuleType('asyncpg'))
@@ -63,8 +72,23 @@ if 'redis.asyncio' not in sys.modules:
 
     redis_async_module.from_url = _from_url
     redis_async_module.Redis = _FakeRedisClient
+
+    # app/utils/cache.py does `from redis.exceptions import NoScriptError` — the
+    # fake `redis` module above has no submodules besides `asyncio`, so that import
+    # fails with "'redis' is not a package" the moment any code path (even
+    # transitively, e.g. importing app.cabinet.routes) reaches app.utils.cache.
+    redis_exceptions_module = types.ModuleType('redis.exceptions')
+
+    class NoScriptError(Exception):
+        """Stand-in for redis.exceptions.NoScriptError — the only one app/ imports."""
+
+    redis_exceptions_module.NoScriptError = NoScriptError
+
+    redis_module.asyncio = redis_async_module
+    redis_module.exceptions = redis_exceptions_module
     sys.modules['redis'] = redis_module
     sys.modules['redis.asyncio'] = redis_async_module
+    sys.modules['redis.exceptions'] = redis_exceptions_module
 
 # Минимальная реализация SDK YooKassa, чтобы импорт сервисов не падал.
 if 'yookassa' not in sys.modules:

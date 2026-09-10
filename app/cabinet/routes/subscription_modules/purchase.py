@@ -109,41 +109,37 @@ async def _build_tariff_response(
 
     periods = []
     if tariff.period_prices:
+        # Same device_limit resolution /purchase-tariff uses (see purchase_tariff()
+        # below) — device_limit=None lets PricingEngine fall back to tariff.device_limit.
+        device_limit_for_pricing = (
+            subscription.device_limit if subscription and subscription.tariff_id == tariff.id else None
+        )
         for period_str, price_kopeks in sorted(tariff.period_prices.items(), key=lambda x: int(x[0])):
             if int(price_kopeks) < 0:
                 continue  # Skip disabled periods (negative price)
             period_days = int(period_str)
             months = max(1, period_days // 30)
 
-            # Базовая цена тарифа
+            # Базовая цена тарифа (informational only — see extra_devices_cost_kopeks below)
             base_tariff_price = int(price_kopeks)
 
-            # Стоимость доп. устройств за этот период
+            # Price via PricingEngine (single source of truth) — this MUST match what
+            # POST /purchase-tariff actually charges, or the preview lies to the
+            # customer. Previously this block re-derived its own discount math inline
+            # (a straight tariff_price * group_pct multiply), which never considered
+            # the tariff's own built-in period discount and could show a price the
+            # customer would never actually be charged.
+            result = await pricing_engine.calculate_tariff_purchase_price(
+                tariff, period_days, device_limit=device_limit_for_pricing, user=user
+            )
+            final_price = result.final_total
+            original_price = result.original_total
+            discount_amount = original_price - final_price
+            discount_percent = round(discount_amount * 100 / original_price) if original_price > 0 else 0
+
+            # Raw (undiscounted) extra-devices cost, for the informational breakdown
+            # line only — the actual discounted devices cost is inside final_price.
             extra_devices_cost = extra_devices_count * extra_device_price_per_month * months
-
-            # Apply per-category promo group discounts
-            original_price = base_tariff_price + extra_devices_cost
-            discount_amount = 0
-
-            if promo_group:
-                period_pct = promo_group.get_discount_percent('period', period_days)
-                devices_pct = promo_group.get_discount_percent('devices', period_days)
-                discounted_base = (
-                    pricing_engine.apply_discount(base_tariff_price, period_pct)
-                    if period_pct > 0
-                    else base_tariff_price
-                )
-                discounted_devices = (
-                    pricing_engine.apply_discount(extra_devices_cost, devices_pct)
-                    if devices_pct > 0
-                    else extra_devices_cost
-                )
-                final_price = discounted_base + discounted_devices
-                discount_amount = original_price - final_price
-                discount_percent = max(period_pct, devices_pct)
-            else:
-                discount_percent = 0
-                final_price = original_price
 
             per_month = final_price // months if months > 0 else final_price
             original_per_month = original_price // months if months > 0 else original_price

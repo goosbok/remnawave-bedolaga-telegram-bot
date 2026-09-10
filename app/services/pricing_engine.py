@@ -30,6 +30,11 @@ class TariffBreakdown:
     group_discount_pct: dict[str, int]
     offer_discount_pct: int
     months_in_period: int = 1
+    # Explainability: which discount source actually determined the base/period price,
+    # and what each competing source offered — so a support agent or admin can look at
+    # a transaction and see exactly why that price was charged, not reverse-engineer it.
+    base_discount_source: str = 'group'  # 'tariff' | 'group' | 'offer'
+    tariff_period_discount_pct: int = 0  # what the tariff's own built-in price offered
 
 
 @dataclass(frozen=True)
@@ -115,40 +120,53 @@ class PricingEngine:
         group_discounted_amount: int,
         offer_percent: int,
         mode: str | None = None,
-    ) -> tuple[int, int, int, bool]:
-        """Combine a promo-group discount with a personal promo-offer discount.
+        tariff_amount: int | None = None,
+    ) -> tuple[int, int, int, bool, str]:
+        """Combine a promo-group discount with a personal promo-offer discount, and
+        optionally a tariff's own built-in price for this component.
 
         Strategy is controlled by DISCOUNT_STACKING_MODE (settings.get_discount_stacking_mode()
         when `mode` is not passed explicitly):
         - 'multiply' (default, legacy): stack sequentially — offer applies on top
-          of the already group-discounted amount.
-        - 'max': take whichever discount saves the customer more; apply only that
-          one, never both. On a tie the offer wins (so it still gets marked as
-          consumed by callers).
+          of the already group-discounted amount. `tariff_amount` is IGNORED in
+          this mode — 'multiply' assumes the caller already baked the tariff's own
+          price into `group_discounted_amount`/`raw_amount`, exactly as before this
+          parameter existed.
+        - 'max': take whichever of {tariff's own price (if given), group-discounted
+          amount, offer-discounted amount} is CHEAPEST; apply only that one, never
+          combine them. Ties favor the more specific/personal source: group beats
+          tariff, offer beats group.
 
-        Returns (final_amount, group_discount_value, offer_discount_value, offer_won).
-        `offer_won` is True only when the offer discount was applied INSTEAD of the
-        group discount (i.e. the group discount was not applied to any component,
-        and callers with per-component prices must reset them to their raw values).
-        In 'multiply' mode `offer_won` is always False — both discounts are always
-        applied together, there is no single winner.
+        Returns (final_amount, group_discount_value, offer_discount_value, offer_won, source).
+        `offer_won` is True only when the offer was the winning source (callers with
+        per-component prices must reset them to their raw values in that case).
+        `source` is one of 'tariff', 'group', 'offer' — which single discount actually
+        determined the price. In 'multiply' mode it is always 'group' (both discounts
+        are always applied together there, so there is no true single winner, but
+        'group' is the closest legacy-compatible label — that's the axis 'multiply'
+        always builds onto).
         """
         if mode is None:
             mode = settings.get_discount_stacking_mode()
 
-        group_discount_value = raw_amount - group_discounted_amount
-
         if mode == 'max':
+            if tariff_amount is not None and tariff_amount < group_discounted_amount:
+                best_amount, best_source = tariff_amount, 'tariff'
+            else:
+                best_amount, best_source = group_discounted_amount, 'group'
+            group_discount_value = raw_amount - best_amount
+
             after_offer_only = PricingEngine.apply_discount(raw_amount, offer_percent)
             offer_discount_value = raw_amount - after_offer_only
             if offer_discount_value >= group_discount_value:
-                return after_offer_only, 0, offer_discount_value, True
-            return group_discounted_amount, group_discount_value, 0, False
+                return after_offer_only, 0, offer_discount_value, True, 'offer'
+            return best_amount, group_discount_value, 0, False, best_source
 
-        # 'multiply' (default / legacy) — both always apply together, no winner
+        # 'multiply' (default / legacy) — tariff_amount ignored, unchanged behavior
+        group_discount_value = raw_amount - group_discounted_amount
         after_offer = PricingEngine.apply_discount(group_discounted_amount, offer_percent)
         offer_discount_value = group_discounted_amount - after_offer
-        return after_offer, group_discount_value, offer_discount_value, False
+        return after_offer, group_discount_value, offer_discount_value, False, 'group'
 
     @staticmethod
     def apply_stacked_discounts(
@@ -160,7 +178,7 @@ class PricingEngine:
         """Apply promo-group discount, then combine with promo-offer per DISCOUNT_STACKING_MODE.
         Returns (final_amount, group_discount_value, offer_discount_value)."""
         after_group = PricingEngine.apply_discount(amount, group_percent)
-        final, group_val, offer_val, _offer_won = PricingEngine._combine_group_and_offer(
+        final, group_val, offer_val, _offer_won, _source = PricingEngine._combine_group_and_offer(
             amount, after_group, offer_percent, mode
         )
         return final, group_val, offer_val
@@ -646,8 +664,37 @@ class PricingEngine:
             devices_pct = promo_group.get_discount_percent('devices', period_days)
 
         offer_pct = get_user_active_promo_discount_percent(user) if user else 0
+        mode = settings.get_discount_stacking_mode()
 
-        discounted_base = self.apply_discount(base_price, period_pct)
+        # Nominal base price (monthly x months) — the TRUE reference price before ANY
+        # discount, including the tariff's own. Only meaningful/used in 'max' mode; in
+        # 'multiply' mode the tariff's own period_prices[days] value is used directly,
+        # exactly as before this feature existed — DO NOT let nominal_base leak into
+        # 'multiply' mode's math, that would silently change already-shipped legacy
+        # behavior for every customer, not just promo-group ones.
+        monthly_price = 0
+        if not (is_daily and period_days <= 1):
+            monthly_price = int((tariff.period_prices or {}).get('30', 0) or 0)
+        nominal_base = monthly_price * months if monthly_price > 0 else base_price
+
+        tariff_period_discount_pct = 0
+        if mode == 'max':
+            # Group's period discount competes against the TRUE nominal price, not
+            # against the tariff's own already-discounted price — that's the whole
+            # point of 'max' mode: the tariff's own discount becomes a candidate,
+            # not something the group discount silently compounds with.
+            discounted_base_via_group = self.apply_discount(nominal_base, period_pct)
+            raw_base = nominal_base
+            tariff_amount_component: int | None = base_price
+            if nominal_base > 0:
+                tariff_period_discount_pct = round((nominal_base - base_price) * 100 / nominal_base)
+        else:
+            # 'multiply' (legacy, unchanged): group discount compounds with the
+            # tariff's own already-discounted price, exactly as before.
+            discounted_base_via_group = self.apply_discount(base_price, period_pct)
+            raw_base = base_price
+            tariff_amount_component = None
+
         discounted_devices = self.apply_discount(devices_price, devices_pct)
 
         # Traffic uses addon discount (checks apply_discounts_to_addons flag)
@@ -655,21 +702,39 @@ class PricingEngine:
         if traffic_price > 0 and user:
             discounted_traffic, _, _ = self.calculate_traffic_discount(traffic_price, user)
 
-        # Group discount vs personal promo-offer: combine per DISCOUNT_STACKING_MODE
-        # (default 'multiply' — offer on top of the group-discounted subtotal, unchanged
-        # legacy behavior; 'max' — take whichever discount saves more, never both).
-        raw_subtotal = base_price + devices_price + traffic_price
-        subtotal = discounted_base + discounted_devices + discounted_traffic
-        final_total, total_group_discount, offer_discount, offer_won = self._combine_group_and_offer(
-            raw_subtotal, subtotal, offer_pct
+        # Three competing discount sources for the base/period component ('max' mode
+        # only — see _combine_group_and_offer docstring for 'multiply' mode's
+        # unchanged, compounding behavior):
+        # (1) the tariff's own built-in "pay for N months, save X%" price (base_price),
+        # (2) the promo-group's period discount, computed against the TRUE nominal
+        #     price (discounted_base_via_group),
+        # (3) the personal promo-offer discount.
+        raw_subtotal = raw_base + devices_price + traffic_price
+        group_subtotal = discounted_base_via_group + discounted_devices + discounted_traffic
+        tariff_subtotal = (
+            tariff_amount_component + discounted_devices + discounted_traffic
+            if tariff_amount_component is not None
+            else None
+        )
+        final_total, total_group_discount, offer_discount, offer_won, base_source = self._combine_group_and_offer(
+            raw_subtotal, group_subtotal, offer_pct, mode=mode, tariff_amount=tariff_subtotal
         )
         if offer_won:
-            # Offer applied instead of the group discount — reset components AND their
-            # percentages to raw/zero (the group discount was never applied to any of
-            # them). Otherwise the breakdown dict would show a non-zero group discount
-            # percentage even though it wasn't the discount actually applied.
-            discounted_base, discounted_devices, discounted_traffic = base_price, devices_price, traffic_price
+            # Offer applied instead of any other discount — reset components AND their
+            # percentages to raw/zero (no other discount was applied to any of them).
+            discounted_base, discounted_devices, discounted_traffic = raw_base, devices_price, traffic_price
             period_pct = devices_pct = 0
+        elif base_source == 'tariff':
+            # The tariff's own built-in discount was cheaper than the group's — use it,
+            # and report 0% group discount (the group's period_pct wasn't what applied,
+            # even if a group discount was nominally configured for this period).
+            discounted_base = base_price
+            period_pct = 0
+        else:
+            # base_source == 'group' — the group's period discount won (or 'multiply'
+            # mode, where this branch always runs and period_pct/discounted_base_via_group
+            # already reflect the correct, unchanged legacy compounding formula).
+            discounted_base = discounted_base_via_group
 
         breakdown = dataclasses.asdict(
             TariffBreakdown(
@@ -678,14 +743,30 @@ class PricingEngine:
                 group_discount_pct={'period': period_pct, 'devices': devices_pct},
                 offer_discount_pct=offer_pct,
                 months_in_period=months,
+                base_discount_source=base_source,
+                tariff_period_discount_pct=tariff_period_discount_pct,
             )
         )
+
+        if mode == 'max':
+            logger.info(
+                'Tariff period price resolved (max mode)',
+                tariff_id=tariff.id,
+                period_days=period_days,
+                nominal_base=nominal_base / 100,
+                tariff_price=base_price / 100,
+                tariff_pct=tariff_period_discount_pct,
+                group_pct=period_pct if base_source == 'group' else 0,
+                offer_pct=offer_pct,
+                winning_source=base_source,
+                final_base_price=discounted_base / 100,
+            )
 
         if final_total < 0:
             logger.warning(
                 'Negative final_total in tariff mode, clamping to 0',
                 final_total=final_total,
-                subtotal=subtotal,
+                raw_subtotal=raw_subtotal,
                 period_pct=period_pct,
                 devices_pct=devices_pct,
                 offer_pct=offer_pct,
@@ -820,7 +901,7 @@ class PricingEngine:
             + traffic_price_per_month * months
             + devices_price_per_month * months
         )
-        final_total, total_group_discount, promo_offer_discount, offer_won = self._combine_group_and_offer(
+        final_total, total_group_discount, promo_offer_discount, offer_won, _source = self._combine_group_and_offer(
             raw_subtotal, subtotal, offer_pct
         )
         if offer_won:

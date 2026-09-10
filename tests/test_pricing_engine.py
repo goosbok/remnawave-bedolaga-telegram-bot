@@ -125,6 +125,76 @@ class TestStackedDiscountsMaxMode:
         assert o_val == 0
 
 
+class TestCombineGroupAndOfferWithTariff:
+    def test_tariff_wins(self):
+        """Tariff's own price (8500) beats group (9000) and offer (9500) — tariff wins."""
+        final, g, o, won, source = PricingEngine._combine_group_and_offer(
+            10000, 9000, 5, mode='max', tariff_amount=8500
+        )
+        assert final == 8500
+        assert g == 1500
+        assert o == 0
+        assert won is False
+        assert source == 'tariff'
+
+    def test_group_wins_over_tariff(self):
+        """Group (7500) beats tariff (8500) and offer (9500) — group wins."""
+        final, g, o, won, source = PricingEngine._combine_group_and_offer(
+            10000, 7500, 5, mode='max', tariff_amount=8500
+        )
+        assert final == 7500
+        assert g == 2500
+        assert o == 0
+        assert won is False
+        assert source == 'group'
+
+    def test_tie_between_tariff_and_group_favors_group(self):
+        final, g, o, won, source = PricingEngine._combine_group_and_offer(
+            10000, 8000, 0, mode='max', tariff_amount=8000
+        )
+        assert final == 8000
+        assert source == 'group'
+
+    def test_offer_beats_both_tariff_and_group(self):
+        """Offer (30% of 10000=3000 discount, final 7000) beats tariff (8500) and group (9000)."""
+        final, g, o, won, source = PricingEngine._combine_group_and_offer(
+            10000, 9000, 30, mode='max', tariff_amount=8500
+        )
+        assert final == 7000
+        assert g == 0
+        assert o == 3000
+        assert won is True
+        assert source == 'offer'
+
+    def test_no_tariff_amount_behaves_as_before(self):
+        """tariff_amount=None (the default, and the only way every pre-existing caller
+        invokes this method) must reproduce EXACTLY the pre-existing 2-way behavior,
+        including the new 5th return value carrying the correct source label."""
+        # Group-wins case (reproduces TestStackedDiscountsMaxMode.test_group_wins,
+        # i.e. apply_stacked_discounts(10000, 20, 10, mode='max') internals).
+        final, g, o, won, source = PricingEngine._combine_group_and_offer(10000, 8000, 10, mode='max')
+        assert (final, g, o, won) == (8000, 2000, 0, False)
+        assert source == 'group'
+
+        # Offer-wins case (reproduces TestStackedDiscountsMaxMode.test_offer_wins,
+        # i.e. apply_stacked_discounts(10000, 10, 20, mode='max') internals).
+        final, g, o, won, source = PricingEngine._combine_group_and_offer(10000, 9000, 20, mode='max')
+        assert (final, g, o, won) == (8000, 0, 2000, True)
+        assert source == 'offer'
+
+        # Explicit tariff_amount=None must be byte-for-byte identical to omitting it.
+        explicit_none = PricingEngine._combine_group_and_offer(10000, 9000, 20, mode='max', tariff_amount=None)
+        assert explicit_none == (8000, 0, 2000, True, 'offer')
+
+    def test_multiply_mode_ignores_tariff_amount(self):
+        """'multiply' mode must ignore tariff_amount entirely — same result with or without it."""
+        without = PricingEngine._combine_group_and_offer(10000, 8000, 10, mode='multiply')
+        with_tariff = PricingEngine._combine_group_and_offer(10000, 8000, 10, mode='multiply', tariff_amount=1)
+        assert without[:4] == with_tariff[:4]  # final, group_val, offer_val, offer_won all identical
+        assert without[4] == 'group'
+        assert with_tariff[4] == 'group'
+
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -681,6 +751,176 @@ class TestCalculateRenewalPriceTariffMode:
         assert result.final_total == 20000
         assert result.promo_group_discount == 0
         assert result.promo_offer_discount == 0
+
+    @pytest.mark.asyncio
+    async def test_tariff_period_discount_beats_group_when_group_smaller(self):
+        """Tariff's own built-in discount (20%) beats a smaller group discount (10%) —
+        the group discount, even though configured, should NOT apply; tariff wins."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 1
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 35000, '360': 336000}  # 336000 = 20% off 12*35000=420000
+        subscription.tariff.device_limit = 1
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 1
+        subscription.tariff.is_daily = False
+        subscription.tariff.can_purchase_custom_days.return_value = False
+        subscription.device_limit = 1
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 10  # smaller than tariff's own 20%
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=0),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 360, user=user)
+        assert result.base_price == 336000  # tariff's own price, unchanged — group's 10% did NOT apply
+        assert result.promo_group_discount == 420000 - 336000  # 84000 — but attributed via tariff, not group
+        assert result.breakdown['group_discount_pct']['period'] == 0  # group did NOT win, must show 0
+        assert result.breakdown['base_discount_source'] == 'tariff'
+        assert result.breakdown['tariff_period_discount_pct'] == 20
+        assert result.final_total == 336000
+
+    @pytest.mark.asyncio
+    async def test_group_discount_beats_tariff_god40_new_tariff_case(self):
+        """The real motivating case: a 'ГОД40' style promo group offering 40% beats the
+        tariff's own smaller 20% built-in discount. Reproduces tariff id 14 'Активный'
+        exactly (nominal 420000 kopeks = 4200 rub, tariff price 336000 = 3360 rub)."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 14
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 35000, '360': 336000}
+        subscription.tariff.device_limit = 2
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 14
+        subscription.tariff.is_daily = False
+        subscription.tariff.can_purchase_custom_days.return_value = False
+        subscription.device_limit = 2
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 40
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=0),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 360, user=user)
+        assert result.final_total == 252000  # 420000 * 0.60 = 40% off nominal, exactly
+        assert result.base_price == 252000
+        assert result.breakdown['base_discount_source'] == 'group'
+        assert result.breakdown['group_discount_pct']['period'] == 40
+        assert result.breakdown['tariff_period_discount_pct'] == 20
+
+    @pytest.mark.asyncio
+    async def test_group_discount_beats_tariff_god40_old_tariff_case(self):
+        """Same promo group (40%), but an 'old' tariff with a bigger built-in discount
+        (25%, tariff id 5 'Команда (старый)': nominal 1800000, tariff price 1350000).
+        Group (40%) still wins since 40% > 25% — this is the exact case that used to
+        give 43.75% instead of 40% before this feature (multiplicative compounding)."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 5
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 150000, '360': 1350000}  # 25% off 12*150000=1800000
+        subscription.tariff.device_limit = 20
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 5
+        subscription.tariff.is_daily = False
+        subscription.tariff.can_purchase_custom_days.return_value = False
+        subscription.device_limit = 20
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 40
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=0),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 360, user=user)
+        assert result.final_total == 1080000  # 1800000 * 0.60 = exactly 40% off nominal
+        assert result.breakdown['base_discount_source'] == 'group'
+        assert result.breakdown['tariff_period_discount_pct'] == 25
+
+    @pytest.mark.asyncio
+    async def test_multiply_mode_unaffected_by_this_feature(self):
+        """'multiply' mode must remain EXACTLY as before — tariff's own discount stays
+        baked into base_price and the group discount compounds with it, unchanged."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 5
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 150000, '360': 1350000}
+        subscription.tariff.device_limit = 20
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 5
+        subscription.tariff.is_daily = False
+        subscription.tariff.can_purchase_custom_days.return_value = False
+        subscription.device_limit = 20
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 25  # the CURRENT live group_pct value, pre-fix
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=0),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'multiply'
+            result = await engine.calculate_renewal_price(db, subscription, 360, user=user)
+        # 1350000 * 0.75 (25% group, compounding with the already-baked-in tariff price) = 1012500
+        assert result.final_total == 1012500
+        assert result.breakdown['base_discount_source'] == 'group'
+
+    @pytest.mark.asyncio
+    async def test_offer_still_wins_over_both_tariff_and_group(self):
+        """Sanity check the three-way system still lets a big personal offer win outright,
+        exactly like before this task (regression guard for the already-shipped behavior)."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 14
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 35000, '360': 336000}
+        subscription.tariff.device_limit = 2
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 14
+        subscription.tariff.is_daily = False
+        subscription.tariff.can_purchase_custom_days.return_value = False
+        subscription.device_limit = 2
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 40
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=60),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 360, user=user)
+        assert result.final_total == 168000  # 420000 * 0.40 (60% off beats 40% group)
+        assert result.breakdown['base_discount_source'] == 'offer'
+        assert result.breakdown['group_discount_pct']['period'] == 0
+        assert result.breakdown['tariff_period_discount_pct'] == 20  # informational, unaffected by who won
+        assert result.promo_offer_discount == 420000 - 168000
 
 
 class TestCalculateRenewalPriceClassicMode:

@@ -35,6 +35,7 @@ class SortByEnum(StrEnum):
     LAST_ACTIVITY = 'last_activity'
     TOTAL_SPENT = 'total_spent'
     PURCHASE_COUNT = 'purchase_count'
+    SUBSCRIPTION_END_DATE = 'subscription_end_date'
 
 
 # === User Subscription Info ===
@@ -70,6 +71,11 @@ class UserSubscriptionInfo(BaseModel):
     purchased_traffic_gb: int = 0
     traffic_purchases: list[TrafficPurchaseItem] = []
 
+    # Platega SBP auto-renewal (admin view only — populated by the async
+    # builder; the sync builder leaves both at their None default).
+    sbp_recurring_status: str | None = None
+    sbp_recurring_id: int | None = None
+
 
 class UserPromoGroupInfo(BaseModel):
     """User promo group info."""
@@ -80,6 +86,21 @@ class UserPromoGroupInfo(BaseModel):
 
 
 # === User List ===
+
+
+class SubscriptionListItem(BaseModel):
+    """Compact subscription info for user list (multi-tariff mode)."""
+
+    id: int
+    tariff_id: int | None = None
+    tariff_name: str | None = None
+    status: str
+    is_trial: bool = False
+    end_date: datetime | None = None
+    days_remaining: int = 0
+    traffic_used_gb: float = 0
+    traffic_limit_gb: int = 0
+    device_limit: int = 0
 
 
 class UserListItem(BaseModel):
@@ -102,6 +123,15 @@ class UserListItem(BaseModel):
     subscription_status: str | None = None
     subscription_is_trial: bool = False
     subscription_end_date: datetime | None = None
+    tariff_id: int | None = None
+    tariff_name: str | None = None
+    traffic_used_gb: float = 0
+    traffic_limit_gb: int = 0
+    device_limit: int = 0
+    days_remaining: int = 0
+
+    # All subscriptions (multi-tariff)
+    subscriptions: list[SubscriptionListItem] = []
 
     # Promo group
     promo_group_id: int | None = None
@@ -126,6 +156,14 @@ class UsersListResponse(BaseModel):
     limit: int = 50
 
 
+class UserByRemnawaveResponse(BaseModel):
+    """Subscription-level owner resolved from an exact Remnawave user id."""
+
+    user_id: int
+    subscription_id: int
+    matched_remnawave_id: int | None = None
+
+
 # === User Detail ===
 
 
@@ -140,6 +178,35 @@ class UserTransactionItem(BaseModel):
     payment_method: str | None = None
     is_completed: bool = True
     created_at: datetime
+
+
+class UserActivityItem(BaseModel):
+    """Одна запись в таймлайне активности пользователя (бот + кабинет).
+
+    ``type`` — источник записи (transaction, event, promocode, coupon, ticket,
+    wheel_spin, poll, gift_sent, gift_received, referral_earning, cabinet_login,
+    withdrawal); ``subtype`` уточняет его (тип транзакции, event_type события,
+    статус тикета и т.п.). ``title`` — сырой человекочитаемый текст источника
+    (описание транзакции, код промокода, название тикета) — локализованный
+    заголовок строит фронт по type/subtype.
+    """
+
+    type: str
+    subtype: str | None = None
+    source: str | None = None  # 'bot' | 'cabinet' — где произошло действие, если известно
+    title: str | None = None
+    amount_kopeks: int | None = None
+    timestamp: datetime
+    meta: dict[str, Any] | None = None
+
+
+class UserActivityResponse(BaseModel):
+    """Paginated user activity timeline."""
+
+    items: list[UserActivityItem]
+    total: int
+    offset: int = 0
+    limit: int = 50
 
 
 class UserReferralInfo(BaseModel):
@@ -213,8 +280,8 @@ class UserDetailResponse(BaseModel):
     # Recent transactions
     recent_transactions: list[UserTransactionItem] = []
 
-    # Remnawave UUID
-    remnawave_uuid: str | None = None
+    # Remnawave panel user id
+    remnawave_id: int | None = None
 
 
 # === Panel Info ===
@@ -285,7 +352,11 @@ class UpdateSubscriptionRequest(BaseModel):
     """Request to update user subscription."""
 
     action: str = Field(
-        ..., description='Action: extend, shorten, set_end_date, change_tariff, set_traffic, toggle_autopay, cancel'
+        ...,
+        description=(
+            'Action: extend, shorten, set_end_date, change_tariff, set_traffic, '
+            'toggle_autopay, cancel, reset (zero out the subscription, keep user+tickets)'
+        ),
     )
 
     # Target subscription (required in multi-tariff mode for non-create actions)
@@ -339,6 +410,21 @@ class UpdateUserStatusResponse(BaseModel):
     success: bool
     old_status: str
     new_status: str
+    message: str
+
+
+class SendUserMessageRequest(BaseModel):
+    """Request to send a direct Telegram message to a user (parity with the
+    bot's «Отправить сообщение» action in the admin user card)."""
+
+    # 4096 — лимит Telegram на текст сообщения
+    text: str = Field(..., min_length=1, max_length=4096, description='Message text (HTML)')
+
+
+class SendUserMessageResponse(BaseModel):
+    """Response after sending a direct message."""
+
+    success: bool
     message: str
 
 
@@ -431,6 +517,9 @@ class DeviceInfo(BaseModel):
     platform: str = ''
     device_model: str = ''
     created_at: str | None = None
+    # User-set local alias (per `user_device_aliases`). None when the user
+    # hasn't renamed this device — clients fall back to platform/device_model.
+    local_name: str | None = None
 
 
 class UserDevicesResponse(BaseModel):
@@ -447,6 +536,19 @@ class DeleteDeviceResponse(BaseModel):
     success: bool
     message: str
     deleted_hwid: str | None = None
+
+
+class RenameDeviceRequest(BaseModel):
+    """Admin payload for `PATCH /admin/users/{user_id}/devices/{hwid}/name`."""
+
+    name: str | None = None
+
+
+class RenameDeviceResponse(BaseModel):
+    """Result of a device-rename operation. `local_name` is None when cleared."""
+
+    hwid: str
+    local_name: str | None = None
 
 
 class ResetDevicesResponse(BaseModel):
@@ -584,7 +686,7 @@ class UserAvailableTariffsResponse(BaseModel):
 class PanelUserInfo(BaseModel):
     """User info from panel."""
 
-    uuid: str | None = None
+    id: int
     short_uuid: str | None = None
     username: str | None = None
     status: str | None = None
@@ -632,7 +734,7 @@ class SyncToPanelResponse(BaseModel):
     success: bool
     message: str
     action: str = ''  # created, updated, no_changes
-    panel_uuid: str | None = None
+    panel_user_id: int | None = None
     changes: dict[str, Any] = {}
     errors: list[str] = []
 
@@ -642,7 +744,7 @@ class PanelSyncStatusResponse(BaseModel):
 
     user_id: int
     telegram_id: int | None = None
-    remnawave_uuid: str | None = None
+    remnawave_id: int | None = None
     last_sync: datetime | None = None
 
     # Multi-tariff context

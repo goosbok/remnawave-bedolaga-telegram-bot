@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.subscription import (
-    decrement_subscription_server_counts,
     get_all_subscriptions_by_user_id,
     get_subscription_by_id_for_user,
 )
@@ -129,28 +128,15 @@ async def delete_subscription(
             detail='Only expired or disabled subscriptions can be deleted',
         )
 
-    # Delete from RemnaWave panel (stops webhooks / phantom notifications)
-    if subscription.remnawave_uuid:
-        try:
-            from app.services.subscription_service import SubscriptionService
+    from app.services.grace_access_runtime import GraceAccessDeletionBlocked
+    from app.services.subscription_deletion_service import delete_subscription_record
 
-            service = SubscriptionService()
-            await service.delete_remnawave_user(subscription.remnawave_uuid)
-        except Exception as e:
-            logger.warning('Failed to delete RemnaWave user on subscription delete', error=e)
-
-    # Decrement server counts
-    await decrement_subscription_server_counts(db, subscription)
-
-    # Delete the subscription
-    await db.delete(subscription)
-    await db.commit()
-
-    logger.info(
-        'Subscription deleted by user',
-        subscription_id=subscription_id,
-        user_id=user.id,
-        tariff_id=subscription.tariff_id,
-    )
+    try:
+        await delete_subscription_record(db, subscription, deleted_by='user')
+    except GraceAccessDeletionBlocked as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Temporary renewal access is still active. Finish or restore grace access before deletion.',
+        ) from error
 
     return {'message': 'Subscription deleted'}

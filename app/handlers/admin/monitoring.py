@@ -175,6 +175,7 @@ async def _build_notification_preview_message(language: str, notification_type: 
         message = template.format(
             end_date=(now - timedelta(days=1)).strftime('%d.%m.%Y %H:%M'),
             price=price_30_days,
+            tariff_label='',
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -213,6 +214,7 @@ async def _build_notification_preview_message(language: str, notification_type: 
             percent=percent,
             expires_at=(now + timedelta(hours=valid_hours)).strftime('%d.%m.%Y %H:%M'),
             trigger_days=3,
+            tariff_label='',
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -258,6 +260,7 @@ async def _build_notification_preview_message(language: str, notification_type: 
             percent=percent,
             trigger_days=trigger_days,
             expires_at=(now + timedelta(hours=valid_hours)).strftime('%d.%m.%Y %H:%M'),
+            tariff_label='',
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -742,7 +745,10 @@ async def traffic_check_callback(callback: CallbackQuery):
         if violations:
             text += '\n⚠️ <b>Превышения дельты:</b>\n'
             for v in violations[:10]:
-                name = html.escape(v.full_name or '') or v.user_uuid[:8]
+                # Числовой id панели не режется срезом, а при отсутствии идентичности
+                # нельзя уронить весь экран в «❌ Ошибка» — показываем прочерк.
+                fallback = f'ID {v.user_id}' if v.user_id else '—'
+                name = html.escape(v.full_name or '') or fallback
                 text += f'• {name}: +{v.used_traffic_gb:.1f} ГБ\n'
             if len(violations) > 10:
                 text += f'... и ещё {len(violations) - 10}\n'
@@ -1172,7 +1178,8 @@ async def nalogo_retry_callback(callback: CallbackQuery):
 
         await callback.answer('🔄 Отправляю чек...', show_alert=False)
 
-        receipt_uuid = await nalogo_service.retry_pending_receipt(payment_id)
+        # bot обязателен: без него чек уйдёт в ФНС, но покупатель его не получит
+        receipt_uuid = await nalogo_service.retry_pending_receipt(payment_id, bot=callback.bot)
 
         if receipt_uuid:
             await callback.answer(f'✅ Чек создан: {receipt_uuid}', show_alert=True)
@@ -1804,14 +1811,14 @@ def _build_traffic_settings_text() -> str:
     # Информация о фильтрах
     monitored_nodes = settings.get_traffic_monitored_nodes()
     ignored_nodes = settings.get_traffic_ignored_nodes()
-    excluded_uuids = settings.get_traffic_excluded_user_uuids()
+    excluded_user_ids = settings.get_traffic_excluded_user_ids()
 
     if monitored_nodes:
         text += f'• Мониторим только: {len(monitored_nodes)} нод(ы)\n'
     if ignored_nodes:
         text += f'• Игнорируем: {len(ignored_nodes)} нод(ы)\n'
-    if excluded_uuids:
-        text += f'• Исключено юзеров: {len(excluded_uuids)}\n'
+    if excluded_user_ids:
+        text += f'• Исключено юзеров: {len(excluded_user_ids)}\n'
 
     return text
 

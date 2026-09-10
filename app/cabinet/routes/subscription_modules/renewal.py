@@ -57,18 +57,32 @@ async def get_renewal_options(
         return []
 
     # Determine available periods
-    if subscription.tariff_id and subscription.tariff and subscription.tariff.period_prices:
+    # Скрытый/неактивный тариф (например, триальный после промокода) —
+    # не показываем его периоды, используем стандартные
+    if (
+        subscription.tariff_id
+        and subscription.tariff
+        and subscription.tariff.is_active
+        and subscription.tariff.period_prices
+    ):
         periods = sorted(int(k) for k in subscription.tariff.period_prices.keys())
+        highlighted_period = subscription.tariff.highlight_period_days
     else:
         periods = settings.get_available_renewal_periods()
+        highlighted_period = None
 
     options = []
+
+    # Нулевая цена — не всегда поломка: у бесплатного тарифа она настроена
+    # намеренно. Пропускаем период, только если цена не проставлена вовсе.
+    renewal_tariff = subscription.tariff if subscription.tariff_id else None
 
     for period in periods:
         pricing = await pricing_engine.calculate_renewal_price(db, subscription, period, user=user)
 
         if pricing.final_total <= 0 and pricing.original_total <= 0:
-            continue
+            if renewal_tariff is None or not renewal_tariff.has_configured_price_for_period(period):
+                continue
 
         original_price = pricing.original_total
         combined_discount = 0
@@ -82,6 +96,9 @@ async def get_renewal_options(
                 price_rubles=pricing.final_total / 100,
                 discount_percent=combined_discount,
                 original_price_kopeks=original_price if combined_discount > 0 else None,
+                # Выделение живёт у тарифа. Когда периоды берутся не из тарифа
+                # (скрытый тариф, классический режим), выделять нечего.
+                is_highlighted=bool(highlighted_period is not None and highlighted_period == period),
             )
         )
 
@@ -128,7 +145,12 @@ async def renew_subscription(
             detail=f'Cannot renew subscription with status: {_actual_status}',
         )
 
-    if subscription.tariff_id and subscription.tariff and subscription.tariff.period_prices:
+    if (
+        subscription.tariff_id
+        and subscription.tariff
+        and subscription.tariff.is_active
+        and subscription.tariff.period_prices
+    ):
         available_periods = [int(p) for p in subscription.tariff.period_prices.keys()]
     else:
         available_periods = settings.get_available_renewal_periods()
@@ -156,10 +178,13 @@ async def renew_subscription(
     promo_offer_discount_percent = pricing.breakdown.get('offer_discount_pct', 0)
 
     if price_kopeks <= 0 and pricing.original_total <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Invalid renewal period',
-        )
+        # Бесплатный тариф продлевается штатно — см. get_renewal_options.
+        renewal_tariff = subscription.tariff if subscription.tariff_id else None
+        if renewal_tariff is None or not renewal_tariff.has_configured_price_for_period(request.period_days):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Invalid renewal period',
+            )
 
     original_price_kopeks = pricing.original_total
     discount_percent = 0
@@ -224,7 +249,7 @@ async def renew_subscription(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 'code': 'insufficient_funds',
-                'message': f'Недостаточно средств. Не хватает {settings.format_price(missing)}',
+                'message': f'Недостаточно средств. Не хватает {settings.format_price(missing, round_kopeks=False)}',
                 'missing_amount': missing,
                 'cart_saved': True,
                 'cart_mode': 'extend',
@@ -253,6 +278,19 @@ async def renew_subscription(
                 'message': 'Недостаточно средств (concurrent check)',
             },
         )
+
+    # Yandex.Metrika offline conversion — see /purchase endpoint for context (#558449).
+    try:
+        from app.services import yandex_offline_conv_service as yandex_conv
+
+        # Purchase event fires centrally from create_transaction; here we only
+        # persist the request-body CID synchronously (#558449).
+        await yandex_conv.store_cid_only(
+            user.id,
+            request.yandex_cid,
+        )
+    except Exception as yconv_err:
+        logger.debug('yandex_conv purchase hook failed (non-fatal)', user_id=user.id, error=str(yconv_err))
 
     response: dict[str, Any] = {
         'message': 'Subscription renewed successfully',

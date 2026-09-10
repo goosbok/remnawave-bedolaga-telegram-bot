@@ -33,9 +33,19 @@ def _verify_signature(raw_body: bytes, received_signature: str, secret: str) -> 
     return hmac.compare_digest(expected, received_signature)
 
 
-def create_remnawave_webhook_router(bot: Bot) -> APIRouter:
+def create_remnawave_webhook_router(bot: Bot, webhook_service: RemnaWaveWebhookService | None = None) -> APIRouter:
+    """Build the FastAPI router for RemnaWave webhooks.
+
+    Service is injectable so the caller (`unified_app.create_unified_app`) can
+    own the service lifecycle (startup/shutdown hooks), keeping it consistent
+    with the way `TelegramWebhookProcessor` is wired up next to it. When the
+    service isn't passed in (e.g. legacy callers, tests), a fresh one is
+    instantiated — but in that case the in-flight node-event coalescing
+    buffer won't be drained on shutdown.
+    """
     router = APIRouter()
-    webhook_service = RemnaWaveWebhookService(bot)
+    if webhook_service is None:
+        webhook_service = RemnaWaveWebhookService(bot)
     webhook_path = settings.REMNAWAVE_WEBHOOK_PATH
 
     @router.get(webhook_path)
@@ -58,7 +68,7 @@ def create_remnawave_webhook_router(bot: Bot) -> APIRouter:
             )
 
         if len(raw_body) > _MAX_BODY_SIZE:
-            logger.warning('RemnaWave webhook: payload too large (bytes)', raw_body_count=len(raw_body))
+            logger.warning('RemnaWave webhook: payload too large', raw_body_count=len(raw_body))
             return JSONResponse(
                 {'status': 'error', 'reason': 'payload_too_large'},
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -125,7 +135,7 @@ def create_remnawave_webhook_router(bot: Bot) -> APIRouter:
         # RemnaWave sends event as full qualified name (e.g. "user.modified"),
         # so we use event directly instead of concatenating scope + event.
         event_name = event
-        logger.info('RemnaWave webhook received: scope event', scope=scope, event_name=event_name)
+        logger.info('RemnaWave webhook received', scope=scope, event_name=event_name)
 
         # Process event — return 200 to prevent retries for application-level errors.
         # Only return non-200 for infrastructure failures (DB unavailable).
@@ -136,7 +146,7 @@ def create_remnawave_webhook_router(bot: Bot) -> APIRouter:
                 processed = await webhook_service.process_event(None, event_name, data)
                 return JSONResponse({'status': 'ok', 'processed': processed})
             except Exception:
-                logger.exception('RemnaWave webhook processing error for event', event_name=event_name)
+                logger.exception('RemnaWave webhook processing error', event_name=event_name)
                 return JSONResponse({'status': 'ok', 'processed': False})
 
         # User events and dual events require a DB session
@@ -148,7 +158,7 @@ def create_remnawave_webhook_router(bot: Bot) -> APIRouter:
                     return JSONResponse({'status': 'ok', 'processed': processed})
                 except Exception:
                     await db.rollback()
-                    logger.exception('RemnaWave webhook processing error for event', event_name=event_name)
+                    logger.exception('RemnaWave webhook processing error', event_name=event_name)
                     return JSONResponse({'status': 'ok', 'processed': False})
         except Exception:
             logger.error('RemnaWave webhook: failed to get database session')

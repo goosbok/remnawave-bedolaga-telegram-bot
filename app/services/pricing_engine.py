@@ -664,9 +664,12 @@ class PricingEngine:
             raw_subtotal, subtotal, offer_pct
         )
         if offer_won:
-            # Offer applied instead of the group discount — reset components to raw
-            # (the group discount was never applied to any of them).
+            # Offer applied instead of the group discount — reset components AND their
+            # percentages to raw/zero (the group discount was never applied to any of
+            # them). Otherwise the breakdown dict would show a non-zero group discount
+            # percentage even though it wasn't the discount actually applied.
             discounted_base, discounted_devices, discounted_traffic = base_price, devices_price, traffic_price
+            period_pct = devices_pct = 0
 
         breakdown = dataclasses.asdict(
             TariffBreakdown(
@@ -821,12 +824,17 @@ class PricingEngine:
             raw_subtotal, subtotal, offer_pct
         )
         if offer_won:
-            # Offer applied instead of the group discount — reset components to raw
-            # (the group discount was never applied to any of them).
+            # Offer applied instead of the group discount — reset components AND their
+            # percentages to raw/zero (the group discount was never applied to any of
+            # them). Resetting only the prices and leaving period_pct/servers_pct/
+            # traffic_pct/devices_pct non-zero would make classic_pricing_to_purchase_details()
+            # re-derive a phantom non-zero discount from the stale percentages below,
+            # which fails validate_pricing_calculation() and breaks real purchases.
             base_price = base_price_original
             servers_price = servers_price_per_month * months
             traffic_price = traffic_price_per_month * months
             devices_price = devices_price_per_month * months
+            period_pct = servers_pct = traffic_pct = devices_pct = 0
 
         valid_servers = [d for d in server_details if d.get('id') is not None]
         breakdown = dataclasses.asdict(

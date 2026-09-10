@@ -579,6 +579,36 @@ class TestCalculateRenewalPriceTariffMode:
         assert result.final_total == 15400
 
     @pytest.mark.asyncio
+    async def test_tariff_offer_wins_breakdown_percentages_reset(self):
+        """When the offer wins, breakdown['group_discount_pct'] must show 0%, not the
+        stale group percentages — otherwise a purchase confirmation screen would display
+        a group discount that wasn't actually the one applied."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = 1
+        subscription.tariff = MagicMock()
+        subscription.tariff.period_prices = {'30': 20000}
+        subscription.tariff.device_limit = 1
+        subscription.tariff.device_price_kopeks = None
+        subscription.tariff.id = 1
+        subscription.device_limit = 1
+        promo_group = MagicMock()
+        promo_group.get_discount_percent.return_value = 10
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        with (
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=30),
+            patch('app.services.pricing_engine.settings') as ms,
+        ):
+            ms.PRICE_PER_DEVICE = 5000
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 30, user=user)
+        assert result.promo_group_discount == 0
+        assert result.breakdown['group_discount_pct'] == {'period': 0, 'devices': 0}
+
+    @pytest.mark.asyncio
     async def test_tariff_missing_period_returns_zero_base(self):
         engine = PricingEngine()
         db = AsyncMock()
@@ -812,6 +842,74 @@ class TestCalculateRenewalPriceClassicMode:
         assert result.promo_group_discount == 0
         assert result.promo_offer_discount == 6000
         assert result.final_total == 14000
+
+    @pytest.mark.asyncio
+    async def test_classic_offer_wins_breakdown_percentages_reset(self):
+        """Regression test: when the offer wins, the breakdown's per-category percentages
+        must also reset to 0, not just the aggregate prices. Before this fix, stale
+        non-zero percentages here made classic_pricing_to_purchase_details() re-derive
+        a phantom discount that failed validate_pricing_calculation() and broke real
+        classic-mode purchases whenever the offer won with a non-zero servers/traffic/
+        devices group discount."""
+        engine = PricingEngine()
+        db = AsyncMock()
+        subscription = MagicMock()
+        subscription.tariff_id = None
+        subscription.tariff = None
+        subscription.connected_squads = ['uuid-1']
+        subscription.traffic_limit_gb = 50
+        subscription.purchased_traffic_gb = 0
+        subscription.device_limit = 4
+        promo_group = MagicMock()
+        promo_group.id = 1
+        promo_group.get_discount_percent.return_value = 10
+        user = MagicMock()
+        user.promo_group = promo_group
+        user.get_primary_promo_group.return_value = promo_group
+        user.promo_group_id = 1
+        user.promo_offer_discount_percent = 30
+        user.promo_offer_expires_at = None
+        server = _make_server(price_kopeks=5000, squad_uuid='uuid-1')
+        with (
+            patch('app.services.pricing_engine.get_server_squads_by_uuids', return_value=[server]),
+            patch('app.services.pricing_engine.get_user_active_promo_discount_percent', return_value=30),
+            patch('app.services.pricing_engine.settings') as ms,
+            patch('app.services.pricing_engine.CLASSIC_PERIOD_PRICES', {30: 10000}),
+            patch('app.services.pricing_engine.PERIOD_PRICES', {30: 10000}),
+        ):
+            ms.get_traffic_price.return_value = 3000
+            ms.PRICE_PER_DEVICE = 1000
+            ms.DEFAULT_DEVICE_LIMIT = 2
+            ms.is_traffic_fixed.return_value = False
+            ms.get_discount_stacking_mode.return_value = 'max'
+            result = await engine.calculate_renewal_price(db, subscription, 30, user=user)
+
+        # Offer wins (same numbers as test_classic_with_discounts_max_mode_offer_wins).
+        assert result.promo_group_discount == 0
+        assert result.promo_offer_discount == 6000
+
+        # THE BUG: breakdown percentages must be 0, not the stale group percentages.
+        assert result.breakdown['group_discount_pct'] == {'period': 0, 'servers': 0, 'traffic': 0, 'devices': 0}
+        assert result.breakdown['servers_individual_prices'] == [5000]  # raw, not group-discounted
+
+        # THE ACTUAL PRODUCTION FAILURE: classic_pricing_to_purchase_details() must produce
+        # internally-consistent numbers that pass validate_pricing_calculation(), i.e. this
+        # must not raise and must reconstruct the same final_total.
+        from app.utils.pricing_utils import validate_pricing_calculation
+
+        details = PricingEngine.classic_pricing_to_purchase_details(result)
+        assert details['traffic_discount_total'] == 0
+        assert details['servers_discount_total'] == 0
+        assert details['devices_discount_total'] == 0
+        months = details['months_in_period']
+        # Mirrors the reconstruction in SubscriptionPurchaseService.calculate_pricing().
+        reconstructed_monthly = (
+            (details['traffic_price_per_month'] - details['traffic_discount_total'] // max(1, months))
+            + (details['servers_price_per_month'] - details['servers_discount_total'] // max(1, months))
+            + (details['devices_price_per_month'] - details['devices_discount_total'] // max(1, months))
+        )
+        discounted_total = result.final_total + result.promo_offer_discount
+        assert validate_pricing_calculation(details['base_price'], reconstructed_monthly, months, discounted_total) is True
 
     @pytest.mark.asyncio
     async def test_classic_fallback_to_period_prices(self):

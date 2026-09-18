@@ -2829,6 +2829,9 @@
 - `tests/live/`
 - `tests/middlewares/`
 - `tests/services/`
+- `tests/test_artemida_settings.py` — Python-модуль
+  Классы: нет
+  Функции: `test_artemida_settings_defaults_are_disabled` — Vendor integration must ship off by default., `test_artemida_settings_read_overrides` — Overrides (as env would supply as strings) are applied as-is.
 - `tests/test_cabinet_purchase_preview_price.py` — Python-модуль
   Классы: `TestPurchasePreviewMatchesRealCharge` (3 методов)
   Функции: нет

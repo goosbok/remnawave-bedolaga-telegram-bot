@@ -240,6 +240,16 @@ class Settings(BaseSettings):
     REMNAWAVE_WEBHOOK_NODE_COALESCE_WINDOW_SECONDS: float = 10.0
     REMNAWAVE_WEBHOOK_NODE_BUFFER_MAX: int = 500
 
+    # --- ARTΞMIDA vendor API ---
+    ARTEMIDA_ENABLED: bool = False
+    ARTEMIDA_BASE_URL: str = 'https://artemida.cc/v1'
+    ARTEMIDA_API_KEY: str | None = None
+    # Публичный базовый URL ребренд-эндпоинта, что уходит клиенту (за RU-front).
+    ARTEMIDA_REBRAND_BASE_URL: str = ''  # напр. https://sub.max-vpn.online/a
+    # Брендинг подписки, отдаваемой клиенту.
+    ARTEMIDA_BRAND_TITLE: str = 'MAX VPN'
+    ARTEMIDA_BRAND_SUPPORT_URL: str = ''
+
     # Ограниченный grace-доступ для продления истёкшей подписки.
     # Режимы: false (выключено), observe (только журнал), true (активно),
     # drain (не выдавать новые grace-сессии, но завершать уже открытые).

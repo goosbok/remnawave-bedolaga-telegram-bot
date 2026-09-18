@@ -2065,6 +2065,11 @@ class Tariff(Base):
     # Внешний сквад RemnaWave (UUID) — назначается пользователю при создании подписки
     external_squad_uuid = Column(String(255), nullable=True, default=None)
 
+    # Источник провижининга подписки: 'remnawave' (свои ноды) | 'artemida' (вендор).
+    provider = Column(String(20), nullable=False, default='remnawave', server_default='remnawave')
+    # Провайдер-специфичные опции (напр. пиннинг локаций Artemida). Пусто = дефолт.
+    provider_opts = Column(JSON, nullable=False, default=dict, server_default='{}')
+
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
@@ -2544,6 +2549,10 @@ class Subscription(Base):
     remnawave_short_id = Column(
         String(16), nullable=False, unique=True, server_default=''
     )  # Permanent short ID for username suffix
+
+    # Ключ у внешнего вендора (Artemida). Заполнено только для provider='artemida'.
+    external_provider = Column(String(20), nullable=True, default=None)
+    external_ref = Column(String(255), nullable=True, default=None)
 
     # Тариф (для режима продаж "Тарифы")
     tariff_id = Column(Integer, ForeignKey('tariffs.id', ondelete='RESTRICT'), nullable=True, index=True)

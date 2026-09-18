@@ -171,3 +171,77 @@ async def test_resolver_real_db_artemida_disabled_raises(monkeypatch):
         service = SubscriptionService()
         with pytest.raises(ArtemidaAPIError):
             await service._artemida_provider_or_none(db, subscription)
+
+
+# ---------------------------------------------------------------------------
+# sync_remnawave_user provider-aware routing (cross-cutting fix): artemida has
+# no remnawave_id, so the create-vs-update decision must route by external_ref
+# instead — otherwise an already-provisioned artemida sub would re-provision
+# (create_remnawave_user -> provider.provision -> client.create_key with the
+# frozen sub-{id}-provision idempotency key) on every renewal/referral-bonus
+# sync instead of a safe, free sync_usage refresh.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_remnawave_user_existing_artemida_routes_to_update(monkeypatch):
+    provider = SimpleNamespace(name='artemida')
+    service = SubscriptionService()
+    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    create = AsyncMock()
+    update = AsyncMock()
+    monkeypatch.setattr(service, 'create_remnawave_user', create)
+    monkeypatch.setattr(service, 'update_remnawave_user', update)
+
+    sub = SimpleNamespace(id=42, user_id=1, remnawave_id=None, external_ref='key_1')
+    await service.sync_remnawave_user(db=AsyncMock(), subscription=sub)
+
+    update.assert_awaited_once()
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_remnawave_user_new_artemida_routes_to_create(monkeypatch):
+    provider = SimpleNamespace(name='artemida')
+    service = SubscriptionService()
+    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    create = AsyncMock()
+    update = AsyncMock()
+    monkeypatch.setattr(service, 'create_remnawave_user', create)
+    monkeypatch.setattr(service, 'update_remnawave_user', update)
+
+    sub = SimpleNamespace(id=42, user_id=1, remnawave_id=None, external_ref=None)
+    await service.sync_remnawave_user(db=AsyncMock(), subscription=sub)
+
+    create.assert_awaited_once()
+    update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_remnawave_user_remnawave_unaffected(monkeypatch):
+    """resolution returns None for a remnawave tariff -> the pre-existing
+    remnawave_id-based create-vs-update routing must stay exactly as before
+    this fix. Multi-tariff is enabled here so panel_id comes straight off the
+    subscription (no get_user_by_id/DB round trip needed for this check)."""
+    service = SubscriptionService()
+    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=None))
+    monkeypatch.setattr('app.services.subscription_service.settings.MULTI_TARIFF_ENABLED', True, raising=False)
+    monkeypatch.setattr('app.services.subscription_service.settings.SALES_MODE', 'tariffs', raising=False)
+
+    create = AsyncMock()
+    update = AsyncMock()
+    monkeypatch.setattr(service, 'create_remnawave_user', create)
+    monkeypatch.setattr(service, 'update_remnawave_user', update)
+
+    no_panel_id_sub = SimpleNamespace(id=1, user_id=1, remnawave_id=None)
+    await service.sync_remnawave_user(db=AsyncMock(), subscription=no_panel_id_sub)
+    create.assert_awaited_once()
+    update.assert_not_awaited()
+
+    create.reset_mock()
+    update.reset_mock()
+
+    known_panel_id_sub = SimpleNamespace(id=2, user_id=1, remnawave_id=123)
+    await service.sync_remnawave_user(db=AsyncMock(), subscription=known_panel_id_sub)
+    update.assert_awaited_once()
+    create.assert_not_awaited()

@@ -297,6 +297,18 @@ class SubscriptionService:
         (награда за реферала, купон, покупка) id ещё не имеет, и update для неё падал с
         «RemnaWave id не найден»: человек оставался без пользователя в панели и без ссылки.
         """
+        provider = await self._artemida_provider_or_none(db, subscription)
+        if provider is not None:
+            # Artemida не имеет remnawave_id — решаем create-vs-update по external_ref:
+            # уже выданный ключ синкуем (update→sync_usage), новый провижиним (create→provision).
+            if subscription.external_ref:
+                return await self.update_remnawave_user(
+                    db, subscription, reset_traffic=reset_traffic, reset_reason=reset_reason
+                )
+            return await self.create_remnawave_user(
+                db, subscription, reset_traffic=reset_traffic, reset_reason=reset_reason
+            )
+
         panel_id = subscription.remnawave_id
         if not settings.is_multi_tariff_enabled():
             user = await get_user_by_id(db, subscription.user_id)

@@ -3706,6 +3706,9 @@
 - `tests/live/__init__.py` — Python-модуль
   Классы: нет
   Функции: нет
+- `tests/live/test_artemida_live.py` — Python-модуль
+  Классы: нет
+  Функции: `api_key`, `test_trial_lifecycle_against_real_api` — balance → создать trial (2 ₽) → subscription-links → отозвать ключ.
 - `tests/live/test_bschek_live.py` — Python-модуль
   Классы: нет
   Функции: `api_key`, `test_operators_shape_and_catalog_parsing`, `test_openapi_core_versions_match_constant` — Версии ядер Xray живут только в описании параметра ``core`` OpenAPI — сверяем константу с ним., `test_account_shape_without_secret`, `test_probe_preview_breakdown`, `test_probe_preview_sni_needs_both_fields`, `test_validation_codes_still_the_same`, `test_scan_preview_rejects_non_24`, `test_scan_preview_shape`, `test_bad_key_is_unauthenticated`

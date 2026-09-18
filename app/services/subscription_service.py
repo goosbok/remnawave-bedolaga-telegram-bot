@@ -11,6 +11,7 @@ from app.config import settings
 from app.database.crud.server_squad import get_all_server_squads
 from app.database.crud.user import get_user_by_id
 from app.database.models import Subscription, SubscriptionStatus, User
+from app.external.artemida_api import ArtemidaAPIError
 from app.external.remnawave_api import (
     RemnaWaveAPI,
     RemnaWaveAPIError,
@@ -25,12 +26,47 @@ from app.services.panel_sync import (
     patch_panel_account,
     push_subscription,
 )
+from app.services.providers import get_provider
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
 
 
 logger = structlog.get_logger(__name__)
+
+
+def _provision_days(subscription) -> int:
+    """Дни оставшегося срока для вызова вендора (end_date задаётся до провижининга)."""
+    end = subscription.end_date
+    if end is None:
+        return 0
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    return max(1, (end - datetime.now(UTC)).days)
+
+
+class _ArtemidaProvisionResult:
+    """Truthy success marker for artemida provisioning (no Remnawave panel user).
+
+    create/update_remnawave_user return None only on FAILURE; callers do
+    `if not rem_user: raise` / `if result is None: requeue`. Artemida has no
+    RemnaWaveUser, so we return a truthy stand-in exposing the few attributes
+    callers read; any other attribute resolves to None so an untested caller
+    path degrades safely instead of AttributeError-ing on a paid success.
+    """
+
+    def __init__(self, subscription):
+        self.subscription_url = subscription.subscription_url
+        self.short_uuid = subscription.external_ref
+        self.subscription_crypto_link = None
+        self.happ_crypto_link = None
+        self.id = None
+
+    def __bool__(self):
+        return True
+
+    def __getattr__(self, name):
+        return None
 
 
 def get_traffic_reset_strategy(tariff=None):
@@ -208,6 +244,43 @@ class SubscriptionService:
         async with self.api as api:
             yield api
 
+    async def _artemida_provider_or_none(self, db: AsyncSession, subscription: Subscription):
+        """Возвращает ArtemidaProvider для artemida-тарифа (иначе None).
+
+        Хот-путь: вызывается на КАЖДОЙ подписке, включая remnawave — основной
+        объём вызовов. Если связь `tariff` уже подгружена — читаем без запроса;
+        иначе тащим только колонку `provider` скаляром (не весь объект тарифа),
+        и полноценно подгружаем связь только когда тариф оказался artemida.
+        """
+        tariff_id = getattr(subscription, 'tariff_id', None)
+        if tariff_id is None:
+            return None
+        from sqlalchemy import inspect as sa_inspect
+
+        from app.database.models import Tariff
+
+        loaded_tariff = None
+        try:
+            if 'tariff' not in sa_inspect(subscription).unloaded:
+                loaded_tariff = subscription.tariff
+        except Exception:
+            loaded_tariff = None
+
+        tariff_loaded = loaded_tariff is not None
+        if tariff_loaded:
+            provider_value = getattr(loaded_tariff, 'provider', 'remnawave')
+        else:
+            provider_value = await db.scalar(select(Tariff.provider).where(Tariff.id == tariff_id))
+
+        if (provider_value or 'remnawave') != 'artemida':
+            return None
+        if not settings.ARTEMIDA_ENABLED:
+            raise ArtemidaAPIError('Artemida-тариф запрошен, но ARTEMIDA_ENABLED=false')
+        if not tariff_loaded:
+            # provision() читает subscription.tariff.device_limit — гарантируем загрузку связи
+            await db.refresh(subscription, ['tariff'])
+        return get_provider(subscription.tariff)
+
     async def sync_remnawave_user(
         self,
         db: AsyncSession,
@@ -244,6 +317,16 @@ class SubscriptionService:
         reset_traffic: bool = False,
         reset_reason: str | None = None,
     ) -> RemnaWaveUser | None:
+        provider = await self._artemida_provider_or_none(db, subscription)
+        if provider is not None:
+            # Artemida-тариф: провижинится у вендора, не в панели. create/update
+            # исторически возвращают None только при ОШИБКЕ (вызывающий код делает
+            # `if not rem_user: raise` / `if result is None: requeue`) — при успехе
+            # отдаём truthy-заглушку, а не None.
+            await provider.provision(db=db, subscription=subscription, days=_provision_days(subscription))
+            await db.commit()
+            return _ArtemidaProvisionResult(subscription)
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
@@ -572,6 +655,14 @@ class SubscriptionService:
         reset_reason: str | None = None,
         sync_squads: bool = True,
     ) -> RemnaWaveUser | None:
+        provider = await self._artemida_provider_or_none(db, subscription)
+        if provider is not None:
+            # Generic-обновление для artemida = безбилетный refresh состояния, НЕ платный
+            # renew. None означало бы ошибку вызывающему коду — возвращаем truthy-заглушку.
+            await provider.sync_usage(db=db, subscription=subscription)
+            await db.commit()
+            return _ArtemidaProvisionResult(subscription)
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
@@ -954,6 +1045,20 @@ class SubscriptionService:
             return None
 
     async def revoke_subscription(self, db: AsyncSession, subscription: Subscription) -> str | None:
+        provider = await self._artemida_provider_or_none(db, subscription)
+        if provider is not None:
+            # remnawave-семантика этого метода — РОТАЦИЯ ссылки/паролей для активного
+            # клиента (кнопки «перевыпустить ссылку», не отмена). У Artemida нет
+            # примитива ротации — только create/revoke ключа целиком, и вызов
+            # provider.revoke() тут удалил бы ключ ПЛАТЯЩЕГО клиента. NO-OP: логируем
+            # и возвращаем неизменную ссылку, чтобы UI отчитался успехом, а не ошибкой.
+            # provider.revoke() зарезервирован для настоящей отмены в другой задаче.
+            logger.warning(
+                'Перевыпуск ссылки не поддерживается для artemida-тарифа',
+                subscription_id=subscription.id,
+            )
+            return subscription.subscription_url
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
@@ -998,6 +1103,12 @@ class SubscriptionService:
             return None
 
     async def sync_subscription_usage(self, db: AsyncSession, subscription: Subscription) -> bool:
+        provider = await self._artemida_provider_or_none(db, subscription)
+        if provider is not None:
+            await provider.sync_usage(db=db, subscription=subscription)
+            await db.commit()
+            return True
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:

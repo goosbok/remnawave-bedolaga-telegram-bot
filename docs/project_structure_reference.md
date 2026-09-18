@@ -1692,7 +1692,7 @@
   Классы: `SubscriptionRenewalError`, `SubscriptionRenewalChargeError`, `SubscriptionRenewalPricing` (2 методов), `SubscriptionRenewalResult`, `RenewalPaymentDescriptor` (1 методов), `SubscriptionRenewalService` (1 методов)
   Функции: `build_renewal_period_id`, `build_payment_descriptor`, `encode_payment_payload`, `decode_payment_payload`, `build_payment_metadata`, `parse_payment_metadata`, `with_admin_notification_service`, `calculate_missing_amount`
 - `app/services/subscription_service.py` — Python-модуль
-  Классы: `PropagateSquadsResult`, `SubscriptionService` (32 методов)
+  Классы: `PropagateSquadsResult`, `SubscriptionService` (33 методов)
   Функции: `get_traffic_reset_strategy` — Получает стратегию сброса трафика., `panel_id_is_free_for` — Не держит ли этот панельный id уже ДРУГАЯ строка подписок., `link_subscription_panel_identity` — Проставить строке id панельного аккаунта, который только что обновили., `reset_subscription_with_panel` — Обнулить подписку «как будто не оформляли» и снять доступ в панели RemnaWave,
 - `app/services/support_settings_service.py` — Python-модуль
   Классы: `SupportSettingsService` (28 методов)
@@ -4191,6 +4191,9 @@
 - `tests/services/test_subscription_extend_cabinet_mode.py` — Python-модуль
   Классы: нет
   Функции: `cabinet_mode` — Полностью настроенный cabinet-режим: и режим меню, и URL кабинета., `test_multi_tariff_cabinet_button_opens_that_subscription_renewal` — РЕГРЕССИЯ: раньше здесь была callback-кнопка, уводившая в бота., `test_single_tariff_cabinet_button_opens_cabinet` — Одиночный режим работал и раньше — поведение не должно поменяться., `test_multi_tariff_without_id_falls_back_to_subscription_list` — Без id конкретной подписки вести некуда — открываем список подписок., `test_bot_mode_keeps_callback_button` — Вне cabinet-режима кнопка обязана остаться обычным callback'ом., `test_cabinet_mode_without_url_falls_back_to_callback` — Cabinet-режим без ``MINIAPP_CUSTOM_URL`` не должен ломать кнопку., `test_dynamic_callback_keeps_subscription_section_styling` — Стиль берётся по секции ``subscription``, а не теряется из-за ``se:{id}``., `test_dynamic_callback_is_not_added_to_static_mapping` — ``se:{id}`` динамический — в статическом маппинге ему места нет., `test_call_sites_do_not_build_extend_callback_by_hand` — РЕГРЕССИЯ: каждый ручной ``f'se:{...}'`` — это ещё одна кнопка в бота., `test_expired_notification_keyboard_opens_cabinet` — Сквозная проверка на том самом уведомлении из отчёта пользователя.
+- `tests/services/test_subscription_provider_dispatch.py` — Python-модуль
+  Классы: нет
+  Функции: `test_create_dispatches_to_artemida_provision`, `test_update_dispatches_to_sync_usage_not_renew`, `test_revoke_is_noop_for_artemida` — revoke_subscription's remnawave semantics are link/password ROTATION for an, `test_sync_dispatches_to_artemida`, `test_remnawave_tariff_not_dispatched`, `test_resolver_raises_when_artemida_tariff_but_disabled` — Backstop: an artemida tariff resolved with ARTEMIDA_ENABLED=False must raise,, `test_resolver_real_db_remnawave_tariff_returns_none`, `test_resolver_real_db_artemida_enabled_returns_provider`, `test_resolver_real_db_artemida_disabled_raises`
 - `tests/services/test_subscription_service_sync.py` — Python-модуль
   Классы: нет
   Функции: `test_sync_picks_create_or_update_by_panel_id`, `test_missing_user_falls_to_create_which_reports_it` — Пользователя нет в базе: не падаем, create сам залогирует и вернёт None.

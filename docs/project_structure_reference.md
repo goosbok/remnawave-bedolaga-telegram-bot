@@ -2189,6 +2189,9 @@
 - `app/webapi/routes/_subscription_state.py` — Python-модуль
   Классы: нет
   Функции: `snapshot_subscription_state`, `restore_subscription_state`
+- `app/webapi/routes/artemida_sub.py` — Python-модуль
+  Классы: нет
+  Функции: `artemida_subscription`
 - `app/webapi/routes/backups.py` — Python-модуль
   Классы: нет
   Функции: `create_backup_endpoint`, `list_backups`, `get_backup_status`, `list_backup_tasks`, `download_backup`, `restore_backup`, `upload_and_restore_backup`, `delete_backup`
@@ -2813,6 +2816,9 @@
   Классы: нет
   Функции: `upgrade`, `downgrade`
 - `migrations/alembic/versions/0120_artemida_provider.py` — Python-модуль
+  Классы: нет
+  Функции: `upgrade`, `downgrade`
+- `migrations/alembic/versions/0121_artemida_external_ref_index.py` — Python-модуль
   Классы: нет
   Функции: `upgrade`, `downgrade`
 
@@ -4458,6 +4464,9 @@
 
 ### tests/webapi
 
+- `tests/webapi/test_artemida_sub_route.py` — Python-модуль
+  Классы: нет
+  Функции: `test_route_returns_rebranded_body`, `test_empty_links_returns_200_with_empty_body`, `test_unknown_token_404`, `test_vendor_error_returns_502`
 - `tests/webapi/test_ban_notification_schema.py` — Python-модуль
   Классы: нет
   Функции: `test_typed_ban_notification_types_are_accepted`, `test_unknown_typed_ban_notification_is_rejected`, `test_invalid_numeric_values_are_rejected`, `test_invalid_typed_ban_template_uses_fallback`, `test_unknown_typed_ban_type_returns_safe_error`, `test_external_values_are_escaped_before_html_send` — Имя ноды и тип сети приходят снаружи и уезжают в сообщение с parse_mode=HTML., `test_typed_ban_reason_is_escaped` — Причина бана тоже приходит снаружи — экранируем., `test_warning_text_is_escaped` — Текст предупреждения приходит по API и не должен ломать разметку., `test_revoke_uses_its_own_template` — revoke — это сброс ключей, а не бан: текст должен отличаться от punishment., `test_unexpected_error_returns_500_not_typeerror` — Неожиданная ошибка обязана превращаться в 500, а не в TypeError.

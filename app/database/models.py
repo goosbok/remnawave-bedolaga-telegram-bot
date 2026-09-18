@@ -2494,6 +2494,18 @@ class Subscription(Base):
         # shortUuid пережил 3.0.0 и остаётся единственным панельным ключом,
         # которым можно резолвить строку, потерявшую связь.
         Index('ix_subscriptions_remnawave_short_uuid', 'remnawave_short_uuid'),
+        # Публичный роут /a/{token} резолвит подписку по external_ref на
+        # каждый запрос — без индекса это seq-scan по всей таблице. Уникальность
+        # частичная (только provider='artemida'): гарантирует, что
+        # scalar_one_or_none() в _load_subscription_by_ref никогда не увидит
+        # MultipleResultsFound.
+        Index(
+            'uq_subscriptions_artemida_external_ref',
+            'external_ref',
+            unique=True,
+            postgresql_where=text("external_provider = 'artemida'"),
+            sqlite_where=text("external_provider = 'artemida'"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)

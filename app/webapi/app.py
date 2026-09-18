@@ -11,6 +11,7 @@ from app.webapi.docs import add_redoc_endpoint
 
 from .middleware import RequestLoggingMiddleware, RequestPathContextMiddleware
 from .routes import (
+    artemida_sub,
     backups,
     ban_notifications,
     broadcasts,
@@ -163,6 +164,13 @@ OPENAPI_TAGS = [
         ),
     },
     {
+        'name': 'artemida',
+        'description': (
+            'Публичный эндпоинт подписки MAX для ключей, выданных вендором ARTΞMIDA '
+            '(rebrand-документ full-tunnel, без токена доступа).'
+        ),
+    },
+    {
         'name': 'ban-notifications',
         'description': (
             'Эндпоинты для приема уведомлений от системы мониторинга ban (Banhammer). '
@@ -222,6 +230,9 @@ def create_web_api_app(lifespan: Any = None) -> FastAPI:
     app.add_middleware(RequestPathContextMiddleware)
 
     app.include_router(health.router)
+    # Public — no API token. Clients fetch their MAX-branded subscription
+    # document directly from the vendor's key id, same as the health check.
+    app.include_router(artemida_sub.router, tags=['artemida'])
     app.include_router(stats.router, prefix='/stats', tags=['stats'])
     app.include_router(config.router, prefix='/settings', tags=['settings'])
     app.include_router(users.router, prefix='/users', tags=['users'])

@@ -1593,6 +1593,7 @@
 - `app/services/promocode_service.py` — Python-модуль
   Классы: `PromoCodeService` (7 методов)
   Функции: нет
+- `app/services/providers/`
 - `app/services/public_offer_service.py` — Python-модуль
   Классы: `PublicOfferService` (10 методов)
   Функции: нет
@@ -1911,6 +1912,18 @@
   Функции: нет
 - `app/services/payment/yookassa.py` — Python-модуль
   Классы: `YooKassaPaymentMixin` (15 методов)
+  Функции: нет
+
+#### app/services/providers
+
+- `app/services/providers/__init__.py` — Python-модуль
+  Классы: нет
+  Функции: `get_provider`
+- `app/services/providers/artemida.py` — Python-модуль
+  Классы: `ArtemidaProvider` (6 методов)
+  Функции: нет
+- `app/services/providers/base.py` — Python-модуль
+  Классы: `SubscriptionProvider` (5 методов)
   Функции: нет
 
 #### app/services/reachability
@@ -3740,6 +3753,9 @@
 - `tests/services/test_apple_iap_service.py` — Python-модуль
   Классы: нет
   Функции: `anyio_backend`, `test_fulfill_verified_transaction_happy_path_credits_balance_after_user_lock`, `test_fulfill_verified_transaction_insert_race_returns_existing_without_double_credit`, `test_one_time_charge_dispatch_fulfills_account_owner`, `test_refund_success_debits_balance_and_marks_transaction_refunded`, `test_consumption_request_requires_recorded_user_consent`, `test_notification_payload_hash_insert_race_is_treated_as_replay`
+- `tests/services/test_artemida_provider.py` — Python-модуль
+  Классы: нет
+  Функции: `test_get_provider_defaults_to_remnawave`, `test_get_provider_artemida`, `test_provision_calls_client_and_sets_fields`, `test_provision_raises_when_rebrand_base_url_missing`, `test_update_renew_uses_end_date_idempotency_key_and_sets_device_limit`, `test_update_upgrade_only_uses_end_date_idempotency_key_and_sets_device_limit`, `test_update_without_external_ref_does_not_call_client`, `test_revoke_calls_client_with_key`, `test_revoke_without_external_ref_does_not_call_client`, `test_sync_usage_updates_device_limit_and_subscription_url`, `test_provision_reraises_insufficient_balance_and_leaves_subscription_unchanged`
 - `tests/services/test_attach_referrer_if_missing.py` — Python-модуль
   Классы: нет
   Функции: `db`, `test_no_op_when_user_already_has_referrer`, `test_no_op_when_no_pending_and_no_code`, `test_attaches_referrer_from_explicit_code`, `test_attaches_referrer_from_redis_pending_when_no_code` — REGRESSION: this is the exact race the user reported., `test_explicit_code_takes_precedence_over_redis` — Explicit URL/state-provided code wins over a stale Redis entry., `test_rejects_self_referral_by_id`, `test_rejects_self_referral_by_telegram_id` — Different DB user IDs but same Telegram account → still self-referral., `test_rejects_self_referral_by_email`, `test_commit_failure_rolls_back_and_returns_none` — If the DB commit fails, the helper rolls back and reports None., `test_registration_event_failure_still_keeps_attachment` — If process_referral_registration raises, the referrer attachment survives., `test_user_without_telegram_id_skips_redis_fallback` — Email-only user (no telegram_id) must not query Redis., `test_invalid_pending_referrer_id_type_is_handled` — Malformed Redis payload (referrer_id is a string that can't int()), `test_process_referral_registration_skips_duplicate_pending_row` — REGRESSION: a second call for the same (referrer, referral) must NOT, `test_process_referral_registration_inserts_first_pending_row` — Negative-control: when no existing pending row, INSERT proceeds normally., `test_helper_lazy_creates_bot_when_caller_omits_it` — Cabinet endpoints don't have a bot in scope; the helper must, `test_cabinet_retroactive_calls_pass_none_for_referral_code` — Source-level pin: the three retroactive attach call sites in, `test_concurrent_attach_uses_conditional_update_not_unconditional_write` — REGRESSION: the helper must use ``UPDATE ... WHERE referred_by_id IS NULL``, `test_concurrent_attach_loser_does_not_fire_event` — When ``rowcount == 0`` (another session already attached), the, `test_helper_uses_caller_supplied_bot_when_provided` — When the bot caller already has a bot (start.py passes message.bot),

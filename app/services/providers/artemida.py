@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.database.models import Subscription, SubscriptionStatus
+from app.external.artemida_api import ArtemidaAPIError, ArtemidaClient
+
+
+logger = structlog.get_logger(__name__)
+
+
+class ArtemidaProvider:
+    name = 'artemida'
+
+    def __init__(self, client_factory: Callable[[], ArtemidaClient] | None = None):
+        self._client_factory = client_factory or (lambda: ArtemidaClient())
+
+    def build_subscription_url(self, subscription: Subscription) -> str:
+        base = settings.ARTEMIDA_REBRAND_BASE_URL.rstrip('/')
+        if not base or not subscription.external_ref:
+            return ''
+        return f'{base}/{subscription.external_ref}'
+
+    async def provision(self, *, db: AsyncSession, subscription: Subscription, days: int) -> None:
+        """Provision the vendor key for a subscription.
+
+        Precondition: subscription.tariff and subscription.end_date must already be loaded/set.
+        """
+        if not settings.ARTEMIDA_REBRAND_BASE_URL:
+            raise ArtemidaAPIError('ARTEMIDA_REBRAND_BASE_URL is not configured')
+
+        devices = subscription.tariff.device_limit
+        async with self._client_factory() as client:
+            key = await client.create_key(
+                days=days,
+                devices=devices,
+                name=f'sub{subscription.id}',
+                customer_ref=str(subscription.id),
+                idempotency_key=f'sub-{subscription.id}-provision',
+            )
+        subscription.external_provider = 'artemida'
+        subscription.external_ref = key.id
+        subscription.device_limit = devices
+        subscription.subscription_url = self.build_subscription_url(subscription)
+        subscription.status = SubscriptionStatus.ACTIVE.value
+        logger.info('Ключ Artemida выдан', subscription_id=subscription.id, key_id=key.id)
+
+    async def update(
+        self, *, db: AsyncSession, subscription: Subscription, days: int | None = None, devices: int | None = None
+    ) -> None:
+        if not subscription.external_ref:
+            return
+        if subscription.end_date is None:
+            raise ArtemidaAPIError('subscription.end_date must be set before renew/upgrade')
+
+        async with self._client_factory() as client:
+            if days is not None:
+                await client.renew_key(
+                    subscription.external_ref,
+                    days=days,
+                    devices=devices,
+                    idempotency_key=f'sub-{subscription.id}-renew-{int(subscription.end_date.timestamp())}',
+                )
+                if devices is not None:
+                    subscription.device_limit = devices
+                logger.info('Ключ Artemida продлён', subscription_id=subscription.id, days=days, devices=devices)
+            elif devices is not None:
+                await client.upgrade_key(
+                    subscription.external_ref,
+                    devices=devices,
+                    idempotency_key=(
+                        f'sub-{subscription.id}-upgrade-{devices}-{int(subscription.end_date.timestamp())}'
+                    ),
+                )
+                subscription.device_limit = devices
+                logger.info('Ключ Artemida обновлён (устройства)', subscription_id=subscription.id, devices=devices)
+
+    async def revoke(self, *, db: AsyncSession, subscription: Subscription) -> None:
+        if not subscription.external_ref:
+            return
+        async with self._client_factory() as client:
+            await client.revoke_key(
+                subscription.external_ref,
+                idempotency_key=f'sub-{subscription.id}-revoke',
+            )
+        logger.info('Ключ Artemida отозван', subscription_id=subscription.id, key_id=subscription.external_ref)
+
+    async def sync_usage(self, *, db: AsyncSession, subscription: Subscription) -> None:
+        if not subscription.external_ref:
+            return
+        async with self._client_factory() as client:
+            key = await client.get_key(subscription.external_ref)
+        if key.subscription_url:
+            subscription.subscription_url = self.build_subscription_url(subscription)
+        if key.devices is not None:
+            subscription.device_limit = key.devices
+        if key.status is not None and key.status != 'ACTIVE':
+            logger.warning('Дрейф статуса ключа Artemida', subscription_id=subscription.id, vendor_status=key.status)
+        logger.info('Синхронизация ключа Artemida', subscription_id=subscription.id, key_id=subscription.external_ref)

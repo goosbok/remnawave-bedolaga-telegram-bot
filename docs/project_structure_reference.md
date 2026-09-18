@@ -837,6 +837,9 @@
 - `app/external/apple_iap.py` — Python-модуль
   Классы: `AppleIAPConfigurationError`, `AppleIAPService` (10 методов)
   Функции: `parse_apple_timestamp` — Convert Apple millisecond timestamps or ISO strings to aware UTC datetimes.
+- `app/external/artemida_api.py` — Python-модуль
+  Классы: `ArtemidaAPIError` (1 методов), `ArtemidaInsufficientBalance`, `ArtemidaGatewayError` (1 методов), `ArtemidaKey` (1 методов), `ArtemidaClient` (13 методов)
+  Функции: нет
 - `app/external/ban_system_api.py` — Python-модуль
   Классы: `BanSystemAPIError` (1 методов), `BanSystemAPI` (34 методов)
   Функции: нет
@@ -3373,6 +3376,9 @@
 - `tests/external/test_apple_iap.py` — Python-модуль
   Классы: `TestAppleDependency` (1 методов), `TestSettings` (8 методов), `TestTransactionValidation` (3 методов), `TestAdapter` (2 методов), `TestSchemas` (4 методов), `TestTimestampParsing` (2 методов), `TestCabinetAppleIAPRoutes` (8 методов), `TestFulfillmentService` (6 методов), `TestAdapterFallback` (1 методов), `TestNotificationService` (7 методов), `TestAppleIAPRouting` (3 методов)
   Функции: `anyio_backend`
+- `tests/external/test_artemida_api.py` — Python-модуль
+  Классы: нет
+  Функции: `test_create_key_parses_and_sends_idempotency`, `test_insufficient_balance_maps_to_typed_error`, `test_subscription_links_returns_links`, `test_generic_error_raises_with_code`, `test_renew_key_sends_idempotency_and_payload`, `test_upgrade_key_sends_idempotency_and_payload`, `test_revoke_key_sends_idempotency`, `test_create_trial_sends_idempotency_and_payload`, `test_retry_after_header_is_parsed_on_error`, `test_get_request_does_not_send_idempotency_header`, `test_unparseable_success_body_raises_gateway_error`, `test_bare_client_without_session_raises_on_use`
 - `tests/external/test_bschek_api.py` — Python-модуль
   Классы: нет
   Функции: `test_error_envelope_is_mapped`, `test_no_dpi_on_carries_skipped_units_in_details`, `test_rate_limited_exposes_retry_after`, `test_validation_422_keeps_fields`, `test_cloudflare_524_without_body_is_gateway_error`, `test_html_502_is_gateway_error`, `test_success_body_is_returned_as_is`, `test_no_dpi_on_race_with_200_is_not_an_error`, `test_every_recorded_error_fixture_parses_to_a_code` — Сторож: новый записанный ответ с конвертом ошибки обязан разбираться., `test_operators_params_join_lists_and_keep_cyrillic`, `test_get_openapi_reads_spec_from_api_root`, `test_account_hides_webhook_secret`, `test_methods_hit_expected_paths`, `test_api_key_never_appears_in_repr`

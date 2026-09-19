@@ -13,7 +13,7 @@ import pytest
 
 from app.database.models import PromoGroup, Subscription, SubscriptionStatus, Tariff, tariff_promo_groups
 from app.services.provider_swap_service import ProviderSwapError, move_subscription_to_provider
-from app.services.providers import _PROVIDERS
+from app.services.providers import _PROVIDERS, register_provider
 from tests.fixtures.sqlite_memory import memory_session
 
 
@@ -112,8 +112,6 @@ async def test_swap_repoints_and_keeps_link(monkeypatch, restore_providers):
     monkeypatch.setattr('app.services.providers.artemida.ArtemidaClient', lambda *a, **k: fake_client)
 
     fake_vendor2 = FakeVendor2Provider()
-    from app.services.providers import register_provider
-
     register_provider('vendor2', lambda: fake_vendor2)
 
     async with memory_session(monkeypatch, _TABLES) as db:
@@ -149,8 +147,6 @@ async def test_swap_provision_failure_leaves_old_vendor(monkeypatch, restore_pro
     monkeypatch.setattr('app.services.providers.artemida.ArtemidaClient', lambda *a, **k: fake_client)
 
     fake_vendor2 = FakeVendor2Provider(fail_provision=True)
-    from app.services.providers import register_provider
-
     register_provider('vendor2', lambda: fake_vendor2)
 
     async with memory_session(monkeypatch, _TABLES) as db:

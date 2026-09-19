@@ -1593,6 +1593,9 @@
 - `app/services/promocode_service.py` — Python-модуль
   Классы: `PromoCodeService` (7 методов)
   Функции: нет
+- `app/services/provider_swap_service.py` — Python-модуль
+  Классы: `ProviderSwapError`
+  Функции: `move_subscription_to_provider` — Move ``subscription`` onto ``new_provider_name`` for its remaining term.
 - `app/services/providers/`
 - `app/services/public_offer_service.py` — Python-модуль
   Классы: `PublicOfferService` (10 методов)
@@ -3728,6 +3731,9 @@
 - `tests/integration/test_promocode_promo_group_flow.py` — Python-модуль
   Классы: нет
   Функции: `test_promo_group_promocode_full_workflow` — Integration test: Full workflow of promo group promocode, `test_duplicate_promo_group_assignment_edge_case` — Edge case: User already has promo group from previous promocode, `test_missing_promo_group_graceful_failure` — Edge case: Promocode references deleted/non-existent promo group
+- `tests/integration/test_provider_swap.py` — Python-модуль
+  Классы: `FakeVendor2Provider` (3 методов)
+  Функции: `restore_providers` — register_provider mutates the module-level _PROVIDERS registry — restore it after., `test_swap_repoints_and_keeps_link`, `test_swap_provision_failure_leaves_old_vendor`, `test_swap_to_same_provider_is_noop`, `test_swap_to_unknown_provider_raises`
 - `tests/integration/test_unlimited_trial_activation.py` — Python-модуль
   Классы: нет
   Функции: `test_activation_creates_unlimited_trial`, `test_activation_rolls_back_on_vendor_failure`, `test_activation_raises_activation_error_when_rollback_also_fails`

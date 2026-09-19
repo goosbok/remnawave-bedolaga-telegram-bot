@@ -6,7 +6,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.models import Subscription, SubscriptionStatus
+from app.database.models import Subscription, SubscriptionStatus, generate_public_token
 from app.external.artemida_api import ArtemidaAPIError, ArtemidaClient
 
 
@@ -41,9 +41,8 @@ class ArtemidaProvider:
 
     def build_subscription_url(self, subscription: Subscription) -> str:
         base = settings.ARTEMIDA_REBRAND_BASE_URL.rstrip('/')
-        if not base or not subscription.external_ref:
-            return ''
-        return f'{base}/{subscription.external_ref}'
+        token = getattr(subscription, 'public_token', None)
+        return f'{base}/{token}' if base and token else ''
 
     async def provision(self, *, db: AsyncSession, subscription: Subscription, days: int) -> None:
         """Provision the vendor key for a subscription.
@@ -94,6 +93,8 @@ class ArtemidaProvider:
         subscription.external_provider = 'artemida'
         subscription.external_ref = key.id
         subscription.device_limit = devices
+        if not subscription.public_token:
+            subscription.public_token = generate_public_token()
         subscription.subscription_url = self.build_subscription_url(subscription)
         subscription.status = SubscriptionStatus.ACTIVE.value
         logger.info(

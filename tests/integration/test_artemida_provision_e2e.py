@@ -85,7 +85,9 @@ async def test_artemida_provision_e2e(monkeypatch):
         await db.refresh(subscription)
         assert subscription.external_provider == 'artemida'
         assert subscription.external_ref == 'key_live_1'
-        assert subscription.subscription_url == 'https://sub.max/a/key_live_1'
+        assert subscription.public_token
+        assert subscription.subscription_url == f'https://sub.max/a/{subscription.public_token}'
+        assert 'key_live_1' not in subscription.subscription_url  # NOT the vendor key id
         assert subscription.device_limit == 3
         assert subscription.status == SubscriptionStatus.ACTIVE.value
 

@@ -14,7 +14,7 @@ def _tariff(provider='artemida', device_limit=3):
     return SimpleNamespace(id=7, provider=provider, device_limit=device_limit, traffic_limit_gb=0, provider_opts={})
 
 
-def _subscription(device_limit=3, tariff=None, end_date=None, external_ref=None):
+def _subscription(device_limit=3, tariff=None, end_date=None, external_ref=None, public_token=None):
     return SimpleNamespace(
         id=42,
         user_id=1,
@@ -25,6 +25,7 @@ def _subscription(device_limit=3, tariff=None, end_date=None, external_ref=None)
         end_date=end_date if end_date is not None else datetime.now(UTC),
         device_limit=device_limit,
         status='pending',
+        public_token=public_token,
     )
 
 
@@ -90,9 +91,35 @@ async def test_provision_calls_client_and_sets_fields(monkeypatch):
     client.renew_key.assert_not_awaited()
     assert sub.external_ref == 'key_9'
     assert sub.external_provider == 'artemida'
-    assert sub.subscription_url == 'https://sub.max/a/key_9'
+    assert sub.public_token
+    assert sub.subscription_url == f'https://sub.max/a/{sub.public_token}'
     assert sub.device_limit == 5
     assert sub.status == SubscriptionStatus.ACTIVE.value
+
+
+@pytest.mark.asyncio
+async def test_provision_sets_public_token_and_builds_url_from_it(monkeypatch):
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_REBRAND_BASE_URL', 'https://sub.max/a', raising=False
+    )
+    sub = _subscription()
+    sub.public_token = None
+    client = AsyncMock()
+    client.create_key.return_value = SimpleNamespace(
+        id='key_9', devices=3, subscription_url='https://vendor/x', expire_at=None
+    )
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+
+    await provider.provision(db=AsyncMock(), subscription=sub, days=30)
+
+    assert sub.public_token  # generated, non-empty
+    assert sub.subscription_url == f'https://sub.max/a/{sub.public_token}'
+    assert '/key_9' not in sub.subscription_url  # NOT the vendor key id
+
+    # re-provision keeps the same token (set once)
+    token1 = sub.public_token
+    await provider.provision(db=AsyncMock(), subscription=sub, days=30)
+    assert sub.public_token == token1
 
 
 @pytest.mark.asyncio
@@ -303,7 +330,7 @@ async def test_revoke_without_external_ref_does_not_call_client():
 
 @pytest.mark.asyncio
 async def test_sync_usage_updates_device_limit_and_subscription_url(monkeypatch):
-    sub = _subscription(external_ref='key_9', device_limit=3)
+    sub = _subscription(external_ref='key_9', device_limit=3, public_token='tok_abc')
     client = AsyncMock()
     client.get_key.return_value = SimpleNamespace(id='key_9', devices=9, status='ACTIVE', subscription_url='https://x')
     provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
@@ -314,7 +341,7 @@ async def test_sync_usage_updates_device_limit_and_subscription_url(monkeypatch)
     await provider.sync_usage(db=AsyncMock(), subscription=sub)
 
     assert sub.device_limit == 9
-    assert sub.subscription_url == 'https://sub.max/a/key_9'
+    assert sub.subscription_url == 'https://sub.max/a/tok_abc'
 
 
 @pytest.mark.asyncio

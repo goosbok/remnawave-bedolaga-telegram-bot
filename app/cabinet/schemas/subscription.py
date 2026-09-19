@@ -178,6 +178,9 @@ class TrialInfoResponse(BaseModel):
     price_kopeks: int = 0
     price_rubles: float = 0.0
     reason_unavailable: str | None = None
+    # Unlimited (Artemida) trial eligibility — independent of the limited-trial
+    # fields above. See unlimited_trial_service.unlimited_trial_available.
+    unlimited: bool = False
 
 
 # ============ Purchase Options Schemas ============

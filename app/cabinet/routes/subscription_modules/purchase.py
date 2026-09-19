@@ -6,6 +6,7 @@ POST /subscription/purchase
 POST /subscription/purchase-tariff
 GET /subscription/trial
 POST /subscription/trial
+POST /subscription/trial/unlimited
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from app.database.crud.transaction import create_transaction
 from app.database.crud.user import add_user_balance, get_user_by_id, subtract_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import PaymentMethod, Subscription, Tariff, Transaction, TransactionType, User
+from app.services import unlimited_trial_service
 from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
@@ -1308,6 +1310,11 @@ async def get_trial_info(
     """Get trial subscription info and availability."""
     await db.refresh(user, ['subscriptions'])
 
+    # Безлимит-триал (Artemida) — независимая от лимитного триала гейт-функция
+    # (свои флаги, своя проверка has_used_trial('unlimited')). Считаем один раз и
+    # прокидываем в каждый из веток ответа ниже, не трогая смысл остальных полей.
+    unlimited_available = unlimited_trial_service.unlimited_trial_available(user)
+
     # Проверяем, отключён ли триал для этого типа пользователя
     if settings.is_trial_disabled_for_user(getattr(user, 'auth_type', 'telegram')):
         return TrialInfoResponse(
@@ -1319,6 +1326,7 @@ async def get_trial_info(
             price_kopeks=0,
             price_rubles=0,
             reason_unavailable='Trial is not available for your account type',
+            unlimited=unlimited_available,
         )
 
     duration_days = settings.TRIAL_DURATION_DAYS
@@ -1366,6 +1374,7 @@ async def get_trial_info(
             price_kopeks=price_kopeks,
             price_rubles=price_kopeks / 100,
             reason_unavailable='You already have an active subscription',
+            unlimited=unlimited_available,
         )
 
     if has_used_trial:
@@ -1378,6 +1387,7 @@ async def get_trial_info(
             price_kopeks=price_kopeks,
             price_rubles=price_kopeks / 100,
             reason_unavailable='Trial already used',
+            unlimited=unlimited_available,
         )
 
     return TrialInfoResponse(
@@ -1388,6 +1398,7 @@ async def get_trial_info(
         requires_payment=requires_payment,
         price_kopeks=price_kopeks,
         price_rubles=price_kopeks / 100,
+        unlimited=unlimited_available,
     )
 
 
@@ -1609,5 +1620,74 @@ async def activate_trial(
             user_id=user.id,
             error=str(yconv_err),
         )
+
+    return _subscription_to_response(subscription, user=user)
+
+
+@router.post('/trial/unlimited', response_model=SubscriptionResponse)
+async def activate_unlimited_trial(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Activate the unlimited (Artemida) trial subscription.
+
+    Mirrors ``activate_trial``'s registration/auth/db-and-user acquisition. All
+    business logic (trial subscription creation + vendor provisioning +
+    rollback on a failed activation) lives in
+    ``unlimited_trial_service.activate_unlimited_trial`` — this endpoint only
+    gates access and translates the service's exceptions into cabinet HTTP
+    errors.
+
+    Independent of the limited trial: this does NOT check for an existing
+    active subscription the way ``activate_trial`` does — eligibility here is
+    entirely ``unlimited_trial_service.unlimited_trial_available``'s call (its
+    own flags + verified-account check + ``has_used_trial('unlimited')``,
+    which two-trials-by-design does not conflate with limited-trial usage).
+    """
+    from app.external.artemida_api import ArtemidaAPIError
+
+    # unlimited_trial_available() reads user.has_used_trial(...), which
+    # iterates user.subscriptions synchronously — must be eagerly loaded first
+    # (same precondition as activate_trial's user.is_trial_already_used() above).
+    await db.refresh(user, ['subscriptions'])
+
+    if not unlimited_trial_service.unlimited_trial_available(user):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Unlimited trial is not available',
+        )
+
+    try:
+        subscription = await unlimited_trial_service.activate_unlimited_trial(db, user)
+    except (
+        unlimited_trial_service.UnlimitedTrialNotEligible,
+        unlimited_trial_service.UnlimitedTrialUnavailable,
+    ) as error:
+        logger.warning('Cabinet: unlimited trial unavailable at activation time', user_id=user.id, error=error)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Unlimited trial is not available',
+        ) from error
+    except unlimited_trial_service.UnlimitedTrialActivationError as error:
+        # Rollback of the half-created trial subscription ALSO failed — the
+        # service already logged this critically. Distinct (500) from the
+        # ordinary vendor-refusal case below, which rolled back cleanly.
+        logger.critical(
+            'Cabinet: failed to roll back unlimited trial after a failed activation',
+            user_id=user.id,
+            error=error,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to activate unlimited trial',
+        ) from error
+    except ArtemidaAPIError as error:
+        logger.error('Cabinet: vendor refused unlimited trial activation', user_id=user.id, error=error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to activate unlimited trial',
+        ) from error
+
+    logger.info('Unlimited trial subscription activated for user', user_id=user.id)
 
     return _subscription_to_response(subscription, user=user)

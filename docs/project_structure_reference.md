@@ -1727,6 +1727,9 @@
 - `app/services/tribute_service.py` — Python-модуль
   Классы: `TributeService` (14 методов)
   Функции: нет
+- `app/services/unlimited_trial_service.py` — Python-модуль
+  Классы: нет
+  Функции: `is_account_verified` — Верифицированный аккаунт: подтверждённая почта ИЛИ привязанный Telegram., `unlimited_trial_available` — Безлимит-триал (Artemida) доступен: фичи включены, аккаунт верифицирован,, `resolve_unlimited_trial_tariff` — Тариф безлимит-триала: по ARTEMIDA_TRIAL_TARIFF_ID, иначе первый активный
 - `app/services/user_action_log_service.py` — Python-модуль
   Классы: нет
   Функции: `bind_request_path` — Запомнить путь текущего запроса на время его обработки., `reset_request_path`, `current_request_path`, `normalize_cabinet_path` — Сворачивает числовые сегменты пути в {id} для группировки однотипных действий., `should_log_cabinet_action`, `should_log_miniapp_action`, `schedule_cabinet_action_log` — Fire-and-forget запись действия юзера в кабинете — не задерживает запрос., `schedule_miniapp_action_log` — Fire-and-forget запись действия юзера в Mini App., `drain_pending_actions` — Дождаться фоновых записей (нужно тестам и корректному завершению).
@@ -4266,6 +4269,9 @@
 - `tests/services/test_traffic_monitoring_status_filter.py` — Python-модуль
   Классы: нет
   Функции: `service`, `test_disabled_and_expired_are_filtered_out` — DISABLED/EXPIRED отсекаются, ACTIVE/LIMITED остаются., `test_all_active_pass_through` — Когда все активны — ничего не теряется., `test_all_inactive_returns_empty` — Сплошь DISABLED/EXPIRED → пустой список (никого не проверяем)., `test_filter_applies_across_paginated_batches` — Фильтр работает на каждом батче; пагинация — по сырому размеру страницы.
+- `tests/services/test_unlimited_trial_service.py` — Python-модуль
+  Классы: `TestIsAccountVerified` (3 методов), `TestUnlimitedTrialAvailable` (5 методов), `TestResolveUnlimitedTrialTariff` (3 методов)
+  Функции: нет
 - `tests/services/test_update_links_panel_identity.py` — Python-модуль
   Классы: нет
   Функции: `test_update_links_fresh_row_to_the_account_it_updated`, `test_update_leaves_row_unlinked_when_sibling_row_holds_the_account`, `test_link_is_noop_for_already_linked_row`

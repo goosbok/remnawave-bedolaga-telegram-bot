@@ -2836,6 +2836,9 @@
 - `scripts/generate_structure_reference.py` — Python-модуль
   Классы: нет
   Функции: `tracked_paths` — Файлы проекта: отслеживаемые плюс новые, которые git не игнорирует., `describe_module` — Строки «Классы:» и «Функции:» для модуля., `render_entries`, `render`, `build`, `main`
+- `scripts/seed_unlimited_trial_tariff.py` — Python-модуль
+  Классы: нет
+  Функции: `seed_unlimited_trial_tariff` — Идемпотентно создаёт безлимит-триальный (Artemida) тариф., `main`
 
 ## tests
 
@@ -2856,6 +2859,7 @@
 - `tests/integration/`
 - `tests/live/`
 - `tests/middlewares/`
+- `tests/scripts/`
 - `tests/services/`
 - `tests/test_artemida_settings.py` — Python-модуль
   Классы: нет
@@ -3394,7 +3398,7 @@
 
 - `tests/database/crud/test_artemida_provider_fields.py` — Python-модуль
   Классы: нет
-  Функции: `test_tariff_provider_defaults_to_remnawave`, `test_subscription_external_ref_defaults_none`
+  Функции: `test_tariff_provider_defaults_to_remnawave`, `test_create_tariff_defaults_to_remnawave` — `create_tariff` predates `provider`/`provider_opts`: the new keyword-only, `test_create_tariff_persists_provider_artemida` — The Artemida vendor path provisions a tariff whose `provider='artemida'`;, `test_subscription_external_ref_defaults_none`
 - `tests/database/crud/test_subscription.py` — Python-модуль
   Классы: нет
   Функции: `test_create_trial_subscription_uses_all_available_squads_by_default`, `test_extend_subscription_convert_trial_false_keeps_trial` — Bug #629889 guardrail: subscription_crud.extend_subscription(tariff_id=..., convert_trial=False), `test_extend_subscription_default_converts_trial_on_purchase` — Default convert_trial=True (a real tariff purchase) still clears is_trial., `test_reset_trials_deletes_panel_first_and_skips_panel_failures` — #630055-trial: панель удаляется ПЕРВОЙ; если удалить в панели не удалось —, `test_reset_trials_keeps_row_when_panel_id_is_unusable` — Непригодный локальный идентификатор (RemnaWaveInvalidUserIdError) — это битая, `test_reset_trials_disable_mode_keeps_panel_account` — REMNAWAVE_USER_DELETE_MODE=disable: аккаунт в панели отключается, а не удаляется,, `test_reset_trials_panel_not_configured_db_only` — Панель не настроена → orphan'ить нечего, чистим только БД, без вызовов панели., `test_is_trial_already_used_gate` — Единый гейт триала (раньше дублировался в 4 местах purchase.py)., `test_subscription_property_ignores_pending_trial_draft` — Незавершённый платный триал не должен подставляться как основная подписка.
@@ -3760,6 +3764,12 @@
 - `tests/middlewares/test_stale_callback_answer.py` — Python-модуль
   Классы: нет
   Функции: `test_phrase_matcher_covers_both_telegram_wordings`, `test_stale_answer_becomes_warning_and_returns_true`, `test_other_errors_on_answer_still_raise`, `test_stale_phrases_on_other_methods_are_not_swallowed` — Middleware узкий: только ответ на нажатие. Редактирование сообщения — не его дело., `test_successful_request_passes_through`, `test_bot_factory_installs_the_middleware_for_every_bot` — Все боты (основной, из кабинета, из фоновых задач) создаются фабрикой — защита общая.
+
+### tests/scripts
+
+- `tests/scripts/test_seed_unlimited_trial_tariff.py` — Python-модуль
+  Классы: нет
+  Функции: `test_apply_on_empty_db_creates_the_tariff`, `test_running_it_again_is_a_noop` — Idempotency: a second run must find the first tariff, not create a sibling., `test_resolver_finds_the_seeded_tariff`, `test_dry_run_does_not_persist_anything`, `test_dry_run_reports_an_existing_tariff_without_duplicating_it`
 
 ### tests/services
 

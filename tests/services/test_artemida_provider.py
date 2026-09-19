@@ -7,7 +7,7 @@ import pytest
 from app.database.models import SubscriptionStatus
 from app.external.artemida_api import ArtemidaAPIError, ArtemidaInsufficientBalance
 from app.services.providers import get_provider
-from app.services.providers.artemida import ArtemidaProvider
+from app.services.providers.artemida import ArtemidaProvider, _chunk_days
 
 
 def _tariff(provider='artemida', device_limit=3):
@@ -47,6 +47,24 @@ def test_get_provider_artemida():
     assert get_provider(_tariff(provider='artemida')).name == 'artemida'
 
 
+def test_chunk_days_at_or_under_max_is_a_single_chunk():
+    assert _chunk_days(30) == [30]
+    assert _chunk_days(90) == [90]
+
+
+def test_chunk_days_splits_into_at_most_90_day_pieces():
+    assert _chunk_days(180) == [90, 90]
+    assert _chunk_days(360) == [90, 90, 90, 90]
+    assert _chunk_days(100) == [90, 10]
+
+
+def test_chunk_days_rejects_non_positive_days():
+    with pytest.raises(ValueError, match='days'):
+        _chunk_days(0)
+    with pytest.raises(ValueError, match='days'):
+        _chunk_days(-1)
+
+
 @pytest.mark.asyncio
 async def test_provision_calls_client_and_sets_fields(monkeypatch):
     # device_limit starts at 2 but the tariff says 5 — a dropped assignment would leave it at 2.
@@ -66,12 +84,91 @@ async def test_provision_calls_client_and_sets_fields(monkeypatch):
     kwargs = client.create_key.await_args.kwargs
     assert kwargs['days'] == 30 and kwargs['devices'] == 5
     assert kwargs['customer_ref'] == '42'
-    assert kwargs['idempotency_key'] == 'sub-42-provision'
+    assert kwargs['idempotency_key'] == 'sub-42-provision-0'
+    client.renew_key.assert_not_awaited()
     assert sub.external_ref == 'key_9'
     assert sub.external_provider == 'artemida'
     assert sub.subscription_url == 'https://sub.max/a/key_9'
     assert sub.device_limit == 5
     assert sub.status == SubscriptionStatus.ACTIVE.value
+
+
+@pytest.mark.asyncio
+async def test_provision_days_180_creates_one_90_day_key_and_renews_one_90_day_chunk(monkeypatch):
+    sub = _subscription(tariff=_tariff(device_limit=5))
+    client = AsyncMock()
+    client.create_key.return_value = SimpleNamespace(
+        id='key_9', devices=5, subscription_url='https://vendor/x', expire_at=None
+    )
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_REBRAND_BASE_URL', 'https://sub.max/a', raising=False
+    )
+
+    await provider.provision(db=AsyncMock(), subscription=sub, days=180)
+
+    client.create_key.assert_awaited_once()
+    create_kwargs = client.create_key.await_args.kwargs
+    assert create_kwargs['days'] == 90
+    assert create_kwargs['idempotency_key'] == 'sub-42-provision-0'
+
+    client.renew_key.assert_awaited_once()
+    renew_call = client.renew_key.await_args
+    assert renew_call.args == ('key_9',)
+    assert renew_call.kwargs['days'] == 90
+    assert renew_call.kwargs['idempotency_key'] == 'sub-42-provision-1'
+
+    assert sub.external_ref == 'key_9'
+    assert sub.device_limit == 5
+    assert sub.status == SubscriptionStatus.ACTIVE.value
+
+
+@pytest.mark.asyncio
+async def test_provision_days_360_creates_one_key_and_renews_three_90_day_chunks(monkeypatch):
+    sub = _subscription(tariff=_tariff(device_limit=5))
+    client = AsyncMock()
+    client.create_key.return_value = SimpleNamespace(
+        id='key_9', devices=5, subscription_url='https://vendor/x', expire_at=None
+    )
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_REBRAND_BASE_URL', 'https://sub.max/a', raising=False
+    )
+
+    await provider.provision(db=AsyncMock(), subscription=sub, days=360)
+
+    create_kwargs = client.create_key.await_args.kwargs
+    assert create_kwargs['days'] == 90
+    assert create_kwargs['idempotency_key'] == 'sub-42-provision-0'
+
+    assert client.renew_key.await_count == 3
+    for i, call in enumerate(client.renew_key.await_args_list, start=1):
+        assert call.args == ('key_9',)
+        assert call.kwargs['days'] == 90
+        assert call.kwargs['idempotency_key'] == f'sub-42-provision-{i}'
+
+    assert sub.external_ref == 'key_9'
+    assert sub.status == SubscriptionStatus.ACTIVE.value
+
+
+@pytest.mark.asyncio
+async def test_provision_days_100_creates_90_day_key_and_renews_10_day_remainder(monkeypatch):
+    sub = _subscription(tariff=_tariff(device_limit=5))
+    client = AsyncMock()
+    client.create_key.return_value = SimpleNamespace(
+        id='key_9', devices=5, subscription_url='https://vendor/x', expire_at=None
+    )
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_REBRAND_BASE_URL', 'https://sub.max/a', raising=False
+    )
+
+    await provider.provision(db=AsyncMock(), subscription=sub, days=100)
+
+    assert client.create_key.await_args.kwargs['days'] == 90
+    client.renew_key.assert_awaited_once()
+    assert client.renew_key.await_args.kwargs['days'] == 10
+    assert client.renew_key.await_args.kwargs['idempotency_key'] == 'sub-42-provision-1'
 
 
 @pytest.mark.asyncio
@@ -98,7 +195,33 @@ async def test_update_renew_uses_end_date_idempotency_key_and_sets_device_limit(
 
     client.renew_key.assert_awaited_once()
     kwargs = client.renew_key.await_args.kwargs
-    assert kwargs['idempotency_key'] == f'sub-42-renew-{int(end_date.timestamp())}'
+    assert kwargs['idempotency_key'] == f'sub-42-renew-{int(end_date.timestamp())}-0'
+    assert sub.device_limit == 4
+
+
+@pytest.mark.asyncio
+async def test_update_renew_days_180_chunks_into_two_90_day_renew_calls():
+    end_date = datetime(2026, 10, 1, 12, 0, 0, tzinfo=UTC)
+    ts = int(end_date.timestamp())
+    sub = _subscription(end_date=end_date, external_ref='key_9')
+    client = AsyncMock()
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+
+    await provider.update(db=AsyncMock(), subscription=sub, days=180, devices=4)
+
+    assert client.renew_key.await_count == 2
+    calls = client.renew_key.await_args_list
+
+    assert calls[0].args == ('key_9',)
+    assert calls[0].kwargs['days'] == 90
+    assert calls[0].kwargs['devices'] == 4
+    assert calls[0].kwargs['idempotency_key'] == f'sub-42-renew-{ts}-0'
+
+    assert calls[1].args == ('key_9',)
+    assert calls[1].kwargs['days'] == 90
+    assert calls[1].kwargs['devices'] is None
+    assert calls[1].kwargs['idempotency_key'] == f'sub-42-renew-{ts}-1'
+
     assert sub.device_limit == 4
 
 
@@ -182,6 +305,33 @@ async def test_provision_reraises_insufficient_balance_and_leaves_subscription_u
     with pytest.raises(ArtemidaInsufficientBalance):
         await provider.provision(db=AsyncMock(), subscription=sub, days=30)
 
+    assert sub.external_ref is None
+    assert sub.external_provider is None
+    assert sub.status == 'pending'
+
+
+@pytest.mark.asyncio
+async def test_provision_reraises_when_second_chunk_renew_fails_and_leaves_subscription_unchanged(monkeypatch):
+    # 180 days = create_key (chunk 0) + one renew_key (chunk 1). Failing that renew_key
+    # call is failing the 2nd vendor call overall; it must propagate and the subscription
+    # must be left exactly as it was before provisioning (the created key becomes an
+    # orphaned, auto-expiring vendor key — acceptable).
+    sub = _subscription(tariff=_tariff(device_limit=5))
+    client = AsyncMock()
+    client.create_key.return_value = SimpleNamespace(
+        id='key_9', devices=5, subscription_url='https://vendor/x', expire_at=None
+    )
+    client.renew_key.side_effect = ArtemidaInsufficientBalance('no funds')
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_REBRAND_BASE_URL', 'https://sub.max/a', raising=False
+    )
+
+    with pytest.raises(ArtemidaInsufficientBalance):
+        await provider.provision(db=AsyncMock(), subscription=sub, days=180)
+
+    client.create_key.assert_awaited_once()
+    client.renew_key.assert_awaited_once()
     assert sub.external_ref is None
     assert sub.external_provider is None
     assert sub.status == 'pending'

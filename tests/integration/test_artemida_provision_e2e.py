@@ -90,7 +90,7 @@ async def test_artemida_provision_e2e(monkeypatch):
         # The vendor received the right call.
         assert fake_client.kwargs['devices'] == 3
         assert fake_client.kwargs['customer_ref'] == str(subscription.id)
-        assert fake_client.kwargs['idempotency_key'] == f'sub-{subscription.id}-provision'
+        assert fake_client.kwargs['idempotency_key'] == f'sub-{subscription.id}-provision-0'
         # end_date is set 30 days out; _provision_days() truncates to whole days,
         # so allow 29 due to elapsed time between construction and the call.
         assert fake_client.kwargs['days'] >= 29

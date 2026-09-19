@@ -12,6 +12,26 @@ from app.external.artemida_api import ArtemidaAPIError, ArtemidaClient
 
 logger = structlog.get_logger(__name__)
 
+_MAX_VENDOR_DAYS = 90
+
+
+def _chunk_days(days: int) -> list[int]:
+    """Split a total day count into pieces of at most ``_MAX_VENDOR_DAYS`` days.
+
+    The ARTΞMIDA vendor hard-caps a single create/renew call's period at
+    ``_MAX_VENDOR_DAYS`` days (confirmed live: ``days=360`` -> ``invalid_pricing_params``),
+    so a longer subscription term must be bought as back-to-back chunks.
+    """
+    if days < 1:
+        raise ValueError(f'days must be >= 1, got {days}')
+    chunks: list[int] = []
+    remaining = days
+    while remaining > 0:
+        chunk = min(remaining, _MAX_VENDOR_DAYS)
+        chunks.append(chunk)
+        remaining -= chunk
+    return chunks
+
 
 class ArtemidaProvider:
     name = 'artemida'
@@ -29,25 +49,38 @@ class ArtemidaProvider:
         """Provision the vendor key for a subscription.
 
         Precondition: subscription.tariff and subscription.end_date must already be loaded/set.
+
+        The vendor hard-caps a single key's period at ``_MAX_VENDOR_DAYS`` days, so a
+        longer term is bought as back-to-back chunks: one ``create_key`` for the first
+        chunk, followed by one ``renew_key`` per remaining chunk against that same key.
         """
         if not settings.ARTEMIDA_REBRAND_BASE_URL:
             raise ArtemidaAPIError('ARTEMIDA_REBRAND_BASE_URL is not configured')
 
         devices = subscription.tariff.device_limit
+        chunks = _chunk_days(days)
         async with self._client_factory() as client:
             key = await client.create_key(
-                days=days,
+                days=chunks[0],
                 devices=devices,
                 name=f'sub{subscription.id}',
                 customer_ref=str(subscription.id),
-                idempotency_key=f'sub-{subscription.id}-provision',
+                idempotency_key=f'sub-{subscription.id}-provision-0',
             )
+            for i, chunk in enumerate(chunks[1:], start=1):
+                await client.renew_key(
+                    key.id,
+                    days=chunk,
+                    idempotency_key=f'sub-{subscription.id}-provision-{i}',
+                )
         subscription.external_provider = 'artemida'
         subscription.external_ref = key.id
         subscription.device_limit = devices
         subscription.subscription_url = self.build_subscription_url(subscription)
         subscription.status = SubscriptionStatus.ACTIVE.value
-        logger.info('Ключ Artemida выдан', subscription_id=subscription.id, key_id=key.id)
+        logger.info(
+            'Ключ Artemida выдан', subscription_id=subscription.id, key_id=key.id, days=days, chunks=len(chunks)
+        )
 
     async def update(
         self, *, db: AsyncSession, subscription: Subscription, days: int | None = None, devices: int | None = None
@@ -59,15 +92,24 @@ class ArtemidaProvider:
 
         async with self._client_factory() as client:
             if days is not None:
-                await client.renew_key(
-                    subscription.external_ref,
-                    days=days,
-                    devices=devices,
-                    idempotency_key=f'sub-{subscription.id}-renew-{int(subscription.end_date.timestamp())}',
-                )
+                chunks = _chunk_days(days)
+                ts = int(subscription.end_date.timestamp())
+                for i, chunk in enumerate(chunks):
+                    await client.renew_key(
+                        subscription.external_ref,
+                        days=chunk,
+                        devices=devices if i == 0 else None,
+                        idempotency_key=f'sub-{subscription.id}-renew-{ts}-{i}',
+                    )
                 if devices is not None:
                     subscription.device_limit = devices
-                logger.info('Ключ Artemida продлён', subscription_id=subscription.id, days=days, devices=devices)
+                logger.info(
+                    'Ключ Artemida продлён',
+                    subscription_id=subscription.id,
+                    days=days,
+                    devices=devices,
+                    chunks=len(chunks),
+                )
             elif devices is not None:
                 await client.upgrade_key(
                     subscription.external_ref,

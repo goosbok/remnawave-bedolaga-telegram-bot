@@ -19,7 +19,6 @@ from sqlalchemy import select
 from app.config import settings
 from app.database.database import AsyncSessionLocal
 from app.database.models import Subscription
-from app.external.artemida_api import ArtemidaAPIError
 from app.services.providers import get_provider_by_name
 from app.services.subscription_rebrand import rebrand_links
 
@@ -44,7 +43,11 @@ async def artemida_subscription(token: str) -> Response:
         raise HTTPException(status_code=404, detail='not found')
     try:
         links = await provider.fetch_links(subscription)
-    except ArtemidaAPIError as error:
+    except Exception as error:
+        # Any failure to fetch links from the vendor — artemida-specific
+        # (ArtemidaAPIError) or a future vendor's own exception type — is a gateway
+        # error, not a bug in this route: report it as 502, never let it fall through
+        # to FastAPI's generic 500.
         logger.warning('rebrand fetch_links failed', token=token, error=str(error))
         raise HTTPException(status_code=502, detail='vendor unavailable') from error
     if not links:

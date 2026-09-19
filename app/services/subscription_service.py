@@ -26,7 +26,7 @@ from app.services.panel_sync import (
     patch_panel_account,
     push_subscription,
 )
-from app.services.providers import get_provider
+from app.services.providers import get_provider_by_name
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
@@ -260,42 +260,59 @@ class SubscriptionService:
         async with self.api as api:
             yield api
 
-    async def _artemida_provider_or_none(self, db: AsyncSession, subscription: Subscription):
-        """Возвращает ArtemidaProvider для artemida-тарифа (иначе None).
+    async def _external_provider_or_none(self, db: AsyncSession, subscription: Subscription):
+        """Возвращает провайдера, обслуживающего подписку у её ТЕКУЩЕГО вендора (иначе None).
 
-        Хот-путь: вызывается на КАЖДОЙ подписке, включая remnawave — основной
-        объём вызовов. Если связь `tariff` уже подгружена — читаем без запроса;
-        иначе тащим только колонку `provider` скаляром (не весь объект тарифа),
-        и полноценно подгружаем связь только когда тариф оказался artemida.
+        Хот-путь: вызывается на КАЖДОЙ подписке, включая remnawave — основной объём
+        вызовов. Диспатч идёт по `subscription.external_provider` — тому вендору,
+        который ФАКТИЧЕСКИ держит подписку сейчас, а не по дефолту из тарифа: после
+        ручного свопа (см. `provider_swap_service`) они расходятся, и резолвинг по
+        тарифу отправил бы update/sync/renew СТАРОМУ вендору. Тариф как дефолт
+        используется только для ещё не провижиненной подписки (`external_provider`
+        пуст) — там ещё нет своего вендора, и решение принимается по тарифу, как раньше.
         """
-        tariff_id = getattr(subscription, 'tariff_id', None)
-        if tariff_id is None:
-            return None
-        from sqlalchemy import inspect as sa_inspect
+        name = getattr(subscription, 'external_provider', None)
+        if not name:
+            # Ещё не провижинена ни у одного вендора — берём дефолт из тарифа. Если
+            # связь `tariff` уже подгружена — читаем без запроса; иначе тащим только
+            # колонку `provider` скаляром (не весь объект тарифа).
+            tariff_id = getattr(subscription, 'tariff_id', None)
+            if tariff_id is None:
+                return None
+            from sqlalchemy import inspect as sa_inspect
 
-        from app.database.models import Tariff
+            from app.database.models import Tariff
 
-        loaded_tariff = None
-        try:
-            if 'tariff' not in sa_inspect(subscription).unloaded:
-                loaded_tariff = subscription.tariff
-        except Exception:
             loaded_tariff = None
+            try:
+                if 'tariff' not in sa_inspect(subscription).unloaded:
+                    loaded_tariff = subscription.tariff
+            except Exception:
+                loaded_tariff = None
 
-        tariff_loaded = loaded_tariff is not None
-        if tariff_loaded:
-            provider_value = getattr(loaded_tariff, 'provider', 'remnawave')
-        else:
-            provider_value = await db.scalar(select(Tariff.provider).where(Tariff.id == tariff_id))
+            if loaded_tariff is not None:
+                name = getattr(loaded_tariff, 'provider', 'remnawave')
+            else:
+                name = await db.scalar(select(Tariff.provider).where(Tariff.id == tariff_id))
 
-        if (provider_value or 'remnawave') != 'artemida':
+        if not name or name == 'remnawave':
             return None
+
+        provider = get_provider_by_name(name)
+        if provider is None or provider.name == 'remnawave':
+            return None
+
         if not settings.ARTEMIDA_ENABLED:
-            raise ArtemidaAPIError('Artemida-тариф запрошен, но ARTEMIDA_ENABLED=false')
-        if not tariff_loaded:
-            # provision() читает subscription.tariff.device_limit — гарантируем загрузку связи
+            raise ArtemidaAPIError('Внешний провайдер запрошен, но ARTEMIDA_ENABLED=false')
+
+        try:
+            # provision()/update() читают subscription.tariff.device_limit — гарантируем
+            # загрузку связи.
             await db.refresh(subscription, ['tariff'])
-        return get_provider(subscription.tariff)
+        except Exception:
+            pass
+
+        return provider
 
     async def sync_remnawave_user(
         self,
@@ -313,7 +330,7 @@ class SubscriptionService:
         (награда за реферала, купон, покупка) id ещё не имеет, и update для неё падал с
         «RemnaWave id не найден»: человек оставался без пользователя в панели и без ссылки.
         """
-        provider = await self._artemida_provider_or_none(db, subscription)
+        provider = await self._external_provider_or_none(db, subscription)
         if provider is not None:
             # Artemida не имеет remnawave_id — решаем create-vs-update по external_ref:
             # уже выданный ключ синкуем (update→sync_usage), новый провижиним (create→provision).
@@ -345,7 +362,7 @@ class SubscriptionService:
         reset_traffic: bool = False,
         reset_reason: str | None = None,
     ) -> RemnaWaveUser | None:
-        provider = await self._artemida_provider_or_none(db, subscription)
+        provider = await self._external_provider_or_none(db, subscription)
         if provider is not None:
             # Artemida-тариф: провижинится у вендора, не в панели. create/update
             # исторически возвращают None только при ОШИБКЕ (вызывающий код делает
@@ -683,7 +700,7 @@ class SubscriptionService:
         reset_reason: str | None = None,
         sync_squads: bool = True,
     ) -> RemnaWaveUser | None:
-        provider = await self._artemida_provider_or_none(db, subscription)
+        provider = await self._external_provider_or_none(db, subscription)
         if provider is not None:
             # Generic-обновление для artemida = безбилетный refresh состояния, НЕ платный
             # renew. None означало бы ошибку вызывающему коду — возвращаем truthy-заглушку.
@@ -1073,7 +1090,7 @@ class SubscriptionService:
             return None
 
     async def revoke_subscription(self, db: AsyncSession, subscription: Subscription) -> str | None:
-        provider = await self._artemida_provider_or_none(db, subscription)
+        provider = await self._external_provider_or_none(db, subscription)
         if provider is not None:
             # remnawave-семантика этого метода — РОТАЦИЯ ссылки/паролей для активного
             # клиента (кнопки «перевыпустить ссылку», не отмена). У Artemida нет
@@ -1131,7 +1148,7 @@ class SubscriptionService:
             return None
 
     async def sync_subscription_usage(self, db: AsyncSession, subscription: Subscription) -> bool:
-        provider = await self._artemida_provider_or_none(db, subscription)
+        provider = await self._external_provider_or_none(db, subscription)
         if provider is not None:
             await provider.sync_usage(db=db, subscription=subscription)
             await db.commit()

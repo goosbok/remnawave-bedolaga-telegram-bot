@@ -96,3 +96,27 @@ async def test_vendor_error_returns_502(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
         r = await ac.get('/a/tok_1')
     assert r.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_non_artemida_vendor_error_also_returns_502(monkeypatch):
+    """A future vendor's ``fetch_links`` can raise its own exception type, unrelated
+    to ``ArtemidaAPIError`` — the route must still report it as a 502 gateway error,
+    not let it fall through to FastAPI's generic 500."""
+
+    class _Vendor2Error(Exception):
+        pass
+
+    monkeypatch.setattr(
+        artemida_sub,
+        '_load_subscription_by_token',
+        AsyncMock(return_value=_subscription(external_provider='vendor2')),
+    )
+    provider = _fake_provider(side_effect=_Vendor2Error('vendor2 is down'))
+    monkeypatch.setattr(artemida_sub, 'get_provider_by_name', lambda name: provider)
+
+    app = FastAPI()
+    app.include_router(artemida_sub.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
+        r = await ac.get('/a/tok_1')
+    assert r.status_code == 502

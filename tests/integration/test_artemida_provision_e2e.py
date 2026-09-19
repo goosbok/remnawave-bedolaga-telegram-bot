@@ -1,7 +1,7 @@
 """Real-DB, in-process end-to-end test for Artemida provisioning.
 
 The unit-level dispatch tests in ``tests/services/test_subscription_provider_dispatch.py``
-monkeypatch ``_artemida_provider_or_none`` itself (or drive the resolver against a
+monkeypatch ``_external_provider_or_none`` itself (or drive the resolver against a
 ``SimpleNamespace`` subscription), so ``ArtemidaProvider.provision`` and
 ``SubscriptionService.create_remnawave_user``'s artemida branch are never exercised
 together against a genuine mapped ``Tariff``/``Subscription`` through a real session.

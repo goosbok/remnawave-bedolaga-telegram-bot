@@ -39,6 +39,15 @@ def test_unlimited_trial_used_limited_still_available():
     assert u.has_used_trial('limited') is False
 
 
+def test_non_artemida_external_provider_also_counts_as_unlimited():
+    """A trial served by ANY external vendor is the 'unlimited' kind, not just
+    artemida — otherwise swapping a trial subscription to a different vendor would
+    flip it back to 'limited' and let the user re-claim the limited trial too."""
+    u = _user([_sub(is_trial=True, external_provider='vendor2')])
+    assert u.has_used_trial('unlimited') is True
+    assert u.has_used_trial('limited') is False
+
+
 def test_paid_subscription_blocks_both():
     u = _user([_sub(is_trial=False, external_provider=None)])
     assert u.has_used_trial('limited') is True

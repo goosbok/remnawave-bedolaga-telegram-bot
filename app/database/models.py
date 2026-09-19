@@ -2249,8 +2249,15 @@ class PartnerStatus(Enum):
 
 
 def _trial_kind(subscription) -> str:
-    """Тип триала по колонке external_provider (без ленивой загрузки tariff)."""
-    return 'unlimited' if getattr(subscription, 'external_provider', None) == 'artemida' else 'limited'
+    """Тип триала по колонке external_provider (без ленивой загрузки tariff).
+
+    Любой внешний вендор (не только artemida) даёт «безлимитный» триал: свап
+    подписки на другого вендора не должен превращать её обратно в «лимитный» и
+    открывать клиенту повторную заявку на тот же вид триала.
+    """
+    return (
+        'unlimited' if (getattr(subscription, 'external_provider', None) or 'remnawave') != 'remnawave' else 'limited'
+    )
 
 
 def generate_public_token() -> str:

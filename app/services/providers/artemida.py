@@ -90,7 +90,7 @@ class ArtemidaProvider:
                     chunks_done=chunks_done,
                 )
                 raise
-        subscription.external_provider = 'artemida'
+        subscription.external_provider = self.name
         subscription.external_ref = key.id
         subscription.device_limit = devices
         if not subscription.public_token:

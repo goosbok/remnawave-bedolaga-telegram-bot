@@ -1,9 +1,16 @@
-"""Dispatch seam: artemida-tariff provisioning routes to ArtemidaProvider.
+"""Dispatch seam: vendor-provisioned subscriptions route to their provider.
 
 Covers Task 5 of the Artemida vendor-integration plan — the four generic
 "push desired state to the panel" entry points in SubscriptionService must
-early-return to the provider for provider='artemida' tariffs, leaving the
+early-return to the provider for a vendor-provisioned subscription, leaving the
 remnawave body untouched for everything else.
+
+The resolver dispatches by ``subscription.external_provider`` (the vendor that
+ACTUALLY holds the subscription right now), falling back to the tariff's default
+provider only while the subscription isn't provisioned on any vendor yet. This is
+what keeps every one of these entry points pointed at the right vendor after a
+manual swap (see ``app/services/provider_swap_service.py``), where the tariff's
+default and the subscription's current vendor can differ.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -14,6 +21,7 @@ import pytest
 
 from app.database.models import PromoGroup, Subscription, Tariff, tariff_promo_groups
 from app.external.artemida_api import ArtemidaAPIError
+from app.services.providers import _PROVIDERS, register_provider
 from app.services.subscription_service import SubscriptionService
 from tests.fixtures.sqlite_memory import memory_session
 
@@ -25,7 +33,7 @@ _TARIFF_TABLES = (Tariff.__table__, PromoGroup.__table__, tariff_promo_groups, S
 async def test_create_dispatches_to_artemida_provision(monkeypatch):
     provider = SimpleNamespace(name='artemida', provision=AsyncMock(), sync_usage=AsyncMock())
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
     sub = SimpleNamespace(
         id=42, user_id=1, end_date=None, subscription_url='https://sub.max/a/key_1', external_ref='key_1'
     )
@@ -41,7 +49,7 @@ async def test_create_dispatches_to_artemida_provision(monkeypatch):
 async def test_update_dispatches_to_sync_usage_not_renew(monkeypatch):
     provider = SimpleNamespace(name='artemida', provision=AsyncMock(), sync_usage=AsyncMock(), update=AsyncMock())
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
     sub = SimpleNamespace(
         id=42, user_id=1, end_date=None, subscription_url='https://sub.max/a/key_1', external_ref='key_1'
     )
@@ -62,7 +70,7 @@ async def test_revoke_is_noop_for_artemida(monkeypatch):
     a no-op that reports success without touching the vendor."""
     provider = SimpleNamespace(name='artemida', revoke=AsyncMock())
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
     sub = SimpleNamespace(id=42, user_id=1, subscription_url='https://sub.max/a/key_1')
     result = await service.revoke_subscription(db=AsyncMock(), subscription=sub)
     provider.revoke.assert_not_awaited()
@@ -73,7 +81,7 @@ async def test_revoke_is_noop_for_artemida(monkeypatch):
 async def test_sync_dispatches_to_artemida(monkeypatch):
     provider = SimpleNamespace(name='artemida', sync_usage=AsyncMock())
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
     sub = SimpleNamespace(id=42, user_id=1)
     result = await service.sync_subscription_usage(db=AsyncMock(), subscription=sub)
     provider.sync_usage.assert_awaited_once()
@@ -84,7 +92,7 @@ async def test_sync_dispatches_to_artemida(monkeypatch):
 async def test_remnawave_tariff_not_dispatched(monkeypatch):
     # resolution returns None -> remnawave body runs; make it bail safely.
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=None))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=None))
     monkeypatch.setattr('app.services.subscription_service.get_user_by_id', AsyncMock(return_value=None))
     sub = SimpleNamespace(id=1, user_id=1)
     result = await service.create_remnawave_user(db=AsyncMock(), subscription=sub)
@@ -108,12 +116,12 @@ async def test_resolver_raises_when_artemida_tariff_but_disabled(monkeypatch):
     # sa_inspect(subscription) blows up inside the resolver's try/except —
     # exercised here to confirm that path degrades to the light db.scalar() lookup.
     with pytest.raises(ArtemidaAPIError):
-        await service._artemida_provider_or_none(db, sub)
+        await service._external_provider_or_none(db, sub)
 
 
 # ---------------------------------------------------------------------------
 # Real-DB resolver coverage — the tests above monkeypatch
-# `_artemida_provider_or_none` itself, so its actual body (the
+# `_external_provider_or_none` itself, so its actual body (the
 # unloaded-relationship / scalar-column / refresh logic) is barely exercised.
 # These three run it against genuine mapped Subscription+Tariff rows.
 # ---------------------------------------------------------------------------
@@ -144,7 +152,7 @@ async def test_resolver_real_db_remnawave_tariff_returns_none(monkeypatch):
         subscription = await _tariff_and_subscription(db, provider='remnawave')
 
         service = SubscriptionService()
-        result = await service._artemida_provider_or_none(db, subscription)
+        result = await service._external_provider_or_none(db, subscription)
         assert result is None
 
 
@@ -156,7 +164,7 @@ async def test_resolver_real_db_artemida_enabled_returns_provider(monkeypatch):
         subscription = await _tariff_and_subscription(db, provider='artemida')
 
         service = SubscriptionService()
-        result = await service._artemida_provider_or_none(db, subscription)
+        result = await service._external_provider_or_none(db, subscription)
         assert result is not None
         assert result.name == 'artemida'
 
@@ -170,7 +178,35 @@ async def test_resolver_real_db_artemida_disabled_raises(monkeypatch):
 
         service = SubscriptionService()
         with pytest.raises(ArtemidaAPIError):
-            await service._artemida_provider_or_none(db, subscription)
+            await service._external_provider_or_none(db, subscription)
+
+
+@pytest.mark.asyncio
+async def test_resolver_dispatches_by_external_provider_not_tariff_default(monkeypatch):
+    """The cross-cutting bug this whole fix closes: a subscription swapped onto a
+    different vendor must resolve to THAT vendor, never falling back to the tariff's
+    default provider — even though the tariff still says 'artemida' (exactly what a
+    manual swap via ``provider_swap_service`` leaves behind, since the swap only ever
+    touches the subscription row, not its tariff)."""
+    monkeypatch.setattr('app.services.subscription_service.settings.ARTEMIDA_ENABLED', True, raising=False)
+
+    class _Vendor2Provider:
+        name = 'vendor2'
+
+    original_providers = dict(_PROVIDERS)
+    register_provider('vendor2', _Vendor2Provider)
+    try:
+        async with memory_session(monkeypatch, _TARIFF_TABLES) as db:
+            subscription = await _tariff_and_subscription(db, provider='artemida')
+            subscription.external_provider = 'vendor2'
+
+            service = SubscriptionService()
+            result = await service._external_provider_or_none(db, subscription)
+            assert result is not None
+            assert result.name == 'vendor2'
+    finally:
+        _PROVIDERS.clear()
+        _PROVIDERS.update(original_providers)
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +223,7 @@ async def test_resolver_real_db_artemida_disabled_raises(monkeypatch):
 async def test_sync_remnawave_user_existing_artemida_routes_to_update(monkeypatch):
     provider = SimpleNamespace(name='artemida')
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
     create = AsyncMock()
     update = AsyncMock()
     monkeypatch.setattr(service, 'create_remnawave_user', create)
@@ -204,7 +240,7 @@ async def test_sync_remnawave_user_existing_artemida_routes_to_update(monkeypatc
 async def test_sync_remnawave_user_new_artemida_routes_to_create(monkeypatch):
     provider = SimpleNamespace(name='artemida')
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=provider))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
     create = AsyncMock()
     update = AsyncMock()
     monkeypatch.setattr(service, 'create_remnawave_user', create)
@@ -224,7 +260,7 @@ async def test_sync_remnawave_user_remnawave_unaffected(monkeypatch):
     this fix. Multi-tariff is enabled here so panel_id comes straight off the
     subscription (no get_user_by_id/DB round trip needed for this check)."""
     service = SubscriptionService()
-    monkeypatch.setattr(service, '_artemida_provider_or_none', AsyncMock(return_value=None))
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=None))
     monkeypatch.setattr('app.services.subscription_service.settings.MULTI_TARIFF_ENABLED', True, raising=False)
     monkeypatch.setattr('app.services.subscription_service.settings.SALES_MODE', 'tariffs', raising=False)
 

@@ -345,6 +345,24 @@ async def test_sync_usage_updates_device_limit_and_subscription_url(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_sync_usage_self_heals_missing_public_token(monkeypatch):
+    # A subscription that somehow lacks public_token must not have its
+    # subscription_url blanked out by sync_usage — self-heal the token instead.
+    sub = _subscription(external_ref='key_9', device_limit=3, public_token=None)
+    client = AsyncMock()
+    client.get_key.return_value = SimpleNamespace(id='key_9', devices=9, status='ACTIVE', subscription_url='https://x')
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_REBRAND_BASE_URL', 'https://sub.max/a', raising=False
+    )
+
+    await provider.sync_usage(db=AsyncMock(), subscription=sub)
+
+    assert sub.public_token
+    assert sub.subscription_url == f'https://sub.max/a/{sub.public_token}'
+
+
+@pytest.mark.asyncio
 async def test_provision_reraises_insufficient_balance_and_leaves_subscription_unchanged(monkeypatch):
     sub = _subscription()
     client = AsyncMock()

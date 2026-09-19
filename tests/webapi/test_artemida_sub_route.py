@@ -9,55 +9,57 @@ from httpx import ASGITransport, AsyncClient
 from app.webapi.routes import artemida_sub
 
 
-def _ctx(obj):
-    class _C:
-        async def __aenter__(self_):
-            return obj
+def _subscription(public_token='tok_1', external_provider='artemida', external_ref='key_1'):  # noqa: S107 — test fixture id, not a secret
+    return SimpleNamespace(
+        id=1,
+        public_token=public_token,
+        external_provider=external_provider,
+        external_ref=external_ref,
+    )
 
-        async def __aexit__(self_, *a):
-            return False
 
-    return _C()
+def _fake_provider(links=None, side_effect=None):
+    provider = SimpleNamespace(name='artemida', fetch_links=AsyncMock())
+    if side_effect is not None:
+        provider.fetch_links.side_effect = side_effect
+    else:
+        provider.fetch_links.return_value = links if links is not None else []
+    return provider
 
 
 @pytest.mark.asyncio
 async def test_route_returns_rebranded_body(monkeypatch):
-    monkeypatch.setattr(
-        artemida_sub, '_load_subscription_by_ref', AsyncMock(return_value=SimpleNamespace(id=1, external_ref='key_1'))
-    )
-    client = AsyncMock()
-    client.get_subscription_links.return_value = {'links': ['vless://a@de.example:443#NL 1'], 'count': 1}
-    monkeypatch.setattr(artemida_sub, '_make_client', lambda: _ctx(client))
+    monkeypatch.setattr(artemida_sub, '_load_subscription_by_token', AsyncMock(return_value=_subscription()))
+    provider = _fake_provider(links=['vless://a@de.example:443#NL 1'])
+    monkeypatch.setattr(artemida_sub, 'get_provider_by_name', lambda name: provider)
 
     app = FastAPI()
     app.include_router(artemida_sub.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
-        r = await ac.get('/a/key_1')
+        r = await ac.get('/a/tok_1')
     assert r.status_code == 200
     assert base64.b64decode(r.text).decode().endswith('#MAX 1')
     assert r.headers['profile-title'] == 'MAX VPN'
+    provider.fetch_links.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_empty_links_returns_200_with_empty_body(monkeypatch):
-    monkeypatch.setattr(
-        artemida_sub, '_load_subscription_by_ref', AsyncMock(return_value=SimpleNamespace(id=1, external_ref='key_1'))
-    )
-    client = AsyncMock()
-    client.get_subscription_links.return_value = {'links': [], 'count': 0}
-    monkeypatch.setattr(artemida_sub, '_make_client', lambda: _ctx(client))
+    monkeypatch.setattr(artemida_sub, '_load_subscription_by_token', AsyncMock(return_value=_subscription()))
+    provider = _fake_provider(links=[])
+    monkeypatch.setattr(artemida_sub, 'get_provider_by_name', lambda name: provider)
 
     app = FastAPI()
     app.include_router(artemida_sub.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
-        r = await ac.get('/a/key_1')
+        r = await ac.get('/a/tok_1')
     assert r.status_code == 200
     assert r.text == ''
 
 
 @pytest.mark.asyncio
 async def test_unknown_token_404(monkeypatch):
-    monkeypatch.setattr(artemida_sub, '_load_subscription_by_ref', AsyncMock(return_value=None))
+    monkeypatch.setattr(artemida_sub, '_load_subscription_by_token', AsyncMock(return_value=None))
     app = FastAPI()
     app.include_router(artemida_sub.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
@@ -66,17 +68,31 @@ async def test_unknown_token_404(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_vendor_error_returns_502(monkeypatch):
-    from app.external.artemida_api import ArtemidaGatewayError
-
+async def test_subscription_with_unknown_provider_returns_404(monkeypatch):
     monkeypatch.setattr(
-        artemida_sub, '_load_subscription_by_ref', AsyncMock(return_value=SimpleNamespace(id=1, external_ref='key_1'))
+        artemida_sub,
+        '_load_subscription_by_token',
+        AsyncMock(return_value=_subscription(external_provider='some-unregistered-vendor')),
     )
-    client = AsyncMock()
-    client.get_subscription_links.side_effect = ArtemidaGatewayError('vendor down', status=502)
-    monkeypatch.setattr(artemida_sub, '_make_client', lambda: _ctx(client))
+    monkeypatch.setattr(artemida_sub, 'get_provider_by_name', lambda name: None)
+
     app = FastAPI()
     app.include_router(artemida_sub.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
-        r = await ac.get('/a/key_1')
+        r = await ac.get('/a/tok_1')
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_vendor_error_returns_502(monkeypatch):
+    from app.external.artemida_api import ArtemidaGatewayError
+
+    monkeypatch.setattr(artemida_sub, '_load_subscription_by_token', AsyncMock(return_value=_subscription()))
+    provider = _fake_provider(side_effect=ArtemidaGatewayError('vendor down', status=502))
+    monkeypatch.setattr(artemida_sub, 'get_provider_by_name', lambda name: provider)
+
+    app = FastAPI()
+    app.include_router(artemida_sub.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
+        r = await ac.get('/a/tok_1')
     assert r.status_code == 502

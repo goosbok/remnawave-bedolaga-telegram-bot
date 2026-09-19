@@ -160,6 +160,8 @@ class ArtemidaProvider:
         async with self._client_factory() as client:
             key = await client.get_key(subscription.external_ref)
         if key.subscription_url:
+            if not subscription.public_token:
+                subscription.public_token = generate_public_token()
             subscription.subscription_url = self.build_subscription_url(subscription)
         if key.devices is not None:
             subscription.device_limit = key.devices

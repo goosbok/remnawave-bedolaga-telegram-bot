@@ -3722,6 +3722,9 @@
 - `tests/integration/__init__.py` — Python-модуль
   Классы: нет
   Функции: нет
+- `tests/integration/test_artemida_full_chain.py` — Python-модуль
+  Классы: нет
+  Функции: `test_full_chain_provision_serve_swap`
 - `tests/integration/test_artemida_provision_e2e.py` — Python-модуль
   Классы: нет
   Функции: `test_artemida_provision_e2e`

@@ -1728,8 +1728,8 @@
   Классы: `TributeService` (14 методов)
   Функции: нет
 - `app/services/unlimited_trial_service.py` — Python-модуль
-  Классы: нет
-  Функции: `is_account_verified` — Верифицированный аккаунт: подтверждённая почта ИЛИ привязанный Telegram., `unlimited_trial_available` — Безлимит-триал (Artemida) доступен: фичи включены, аккаунт верифицирован,, `resolve_unlimited_trial_tariff` — Тариф безлимит-триала: по ARTEMIDA_TRIAL_TARIFF_ID, иначе первый активный
+  Классы: `UnlimitedTrialNotEligible`, `UnlimitedTrialUnavailable`, `UnlimitedTrialActivationError`
+  Функции: `is_account_verified` — Верифицированный аккаунт: подтверждённая почта ИЛИ привязанный Telegram., `unlimited_trial_available` — Безлимит-триал (Artemida) доступен: фичи включены, аккаунт верифицирован,, `resolve_unlimited_trial_tariff` — Тариф безлимит-триала: по ARTEMIDA_TRIAL_TARIFF_ID, иначе первый активный, `activate_unlimited_trial` — Активирует безлимит-триал (Artemida) для пользователя.
 - `app/services/user_action_log_service.py` — Python-модуль
   Классы: нет
   Функции: `bind_request_path` — Запомнить путь текущего запроса на время его обработки., `reset_request_path`, `current_request_path`, `normalize_cabinet_path` — Сворачивает числовые сегменты пути в {id} для группировки однотипных действий., `should_log_cabinet_action`, `should_log_miniapp_action`, `schedule_cabinet_action_log` — Fire-and-forget запись действия юзера в кабинете — не задерживает запрос., `schedule_miniapp_action_log` — Fire-and-forget запись действия юзера в Mini App., `drain_pending_actions` — Дождаться фоновых записей (нужно тестам и корректному завершению).
@@ -3712,6 +3712,9 @@
 - `tests/integration/test_promocode_promo_group_flow.py` — Python-модуль
   Классы: нет
   Функции: `test_promo_group_promocode_full_workflow` — Integration test: Full workflow of promo group promocode, `test_duplicate_promo_group_assignment_edge_case` — Edge case: User already has promo group from previous promocode, `test_missing_promo_group_graceful_failure` — Edge case: Promocode references deleted/non-existent promo group
+- `tests/integration/test_unlimited_trial_activation.py` — Python-модуль
+  Классы: нет
+  Функции: `test_activation_creates_unlimited_trial`, `test_activation_rolls_back_on_vendor_failure`, `test_activation_raises_activation_error_when_rollback_also_fails`
 
 ### tests/live
 

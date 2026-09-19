@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, datetime, time, timedelta
 
 
@@ -2252,6 +2253,11 @@ def _trial_kind(subscription) -> str:
     return 'unlimited' if getattr(subscription, 'external_provider', None) == 'artemida' else 'limited'
 
 
+def generate_public_token() -> str:
+    """Наш стабильный публичный id ссылки, не зависящий от вендора."""
+    return secrets.token_urlsafe(24)
+
+
 class User(Base):
     __tablename__ = 'users'
 
@@ -2582,6 +2588,10 @@ class Subscription(Base):
     # Ключ у внешнего вендора (Artemida). Заполнено только для provider='artemida'.
     external_provider = Column(String(20), nullable=True, default=None)
     external_ref = Column(String(255), nullable=True, default=None)
+
+    # Наш стабильный публичный идентификатор ссылки, независимый от вендора.
+    # Ссылка клиента строится на нём, поэтому смена вендора её не меняет.
+    public_token = Column(String(64), nullable=True, unique=True, index=True)
 
     # Тариф (для режима продаж "Тарифы")
     tariff_id = Column(Integer, ForeignKey('tariffs.id', ondelete='RESTRICT'), nullable=True, index=True)

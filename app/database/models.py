@@ -2247,6 +2247,11 @@ class PartnerStatus(Enum):
     REJECTED = 'rejected'  # Заявка отклонена
 
 
+def _trial_kind(subscription) -> str:
+    """Тип триала по колонке external_provider (без ленивой загрузки tariff)."""
+    return 'unlimited' if getattr(subscription, 'external_provider', None) == 'artemida' else 'limited'
+
+
 class User(Base):
     __tablename__ = 'users'
 
@@ -2324,18 +2329,30 @@ class User(Base):
                 return sub
         return None
 
-    def is_trial_already_used(self) -> bool:
-        """Единый гейт доступности триала для бота И кабинета.
-
-        Раньше проверка дублировалась 4× в боте (purchase.py) и 2× в кабинете, причём
-        с разной логикой. Триал недоступен, если пользователь уже оплачивал подписку
-        ЛИБО у него есть ЛЮБАЯ подписка — кроме PENDING-триала (это повторная попытка
-        оплаты того же триала). Проверяются ВСЕ подписки (multi-tariff-safe). Требует
-        загруженного `subscriptions`.
-        """
+    def has_used_trial(self, kind: str = 'limited') -> bool:
+        """Триал типа kind недоступен, если была платная подписка, есть любая
+        НЕ-триальная подписка, или уже брали триал ЭТОГО же типа (кроме pending)."""
         if self.has_had_paid_subscription:
             return True
-        return any(not sub.is_pending_trial for sub in (self.subscriptions or []))
+        for sub in self.subscriptions or []:
+            if sub.is_pending_trial:
+                continue
+            if not sub.is_trial:
+                return True
+            if _trial_kind(sub) == kind:
+                return True
+        return False
+
+    def is_trial_already_used(self) -> bool:
+        """Единый гейт доступности ЛИМИТНОГО триала для бота И кабинета.
+
+        Раньше проверка дублировалась 4× в боте (purchase.py) и 2× в кабинете, причём
+        с разной логикой. Обратная совместимость: тонкая обёртка над
+        `has_used_trial('limited')`, сохраняет поведение для всех прежних вызовов.
+        Проверяются ВСЕ подписки (multi-tariff-safe). Требует загруженного
+        `subscriptions`.
+        """
+        return self.has_used_trial('limited')
 
     transactions = relationship('Transaction', back_populates='user')
     referral_earnings = relationship('ReferralEarning', foreign_keys='ReferralEarning.user_id', back_populates='user')

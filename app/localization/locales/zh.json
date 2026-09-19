@@ -1572,6 +1572,7 @@
   "TRIAL_ALREADY_USED": "❌试用订阅已被使用",
   "UNLIMITED_TRIAL_ACTIVATE_BUTTON": "🚀无限流量·1天",
   "UNLIMITED_TRIAL_UNAVAILABLE": "🚀无限流量试用期不可用",
+  "TRIAL_OFFER_UNLIMITED_ONLY": "🚀无限流量试用期开放1天",
   "TRIAL_AVAILABLE": "\n🎁<b>试用订阅</b>\n\n您可以获得试用订阅{price_line}：\n\n⏰<b>周期：</b>{days}天\n📈<b>流量：</b>{traffic}{devices_line}\n🌍<b>服务器：</b>{server_name}\n\n激活试用订阅吗？\n",
   "TRIAL_AVAILABLE_DEVICES_LINE": "\n📱<b>设备：</b>{devices}台",
   "TRIAL_PAYMENT_PRICE_LINE": "\n💳<b>激活费用：</b>{price}",

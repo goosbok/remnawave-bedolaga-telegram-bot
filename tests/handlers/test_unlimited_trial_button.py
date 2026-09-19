@@ -4,6 +4,10 @@ Covers:
   1. ``get_trial_keyboard`` (app/keyboards/inline.py): shows the
      unlimited-trial button only when ``unlimited_trial_available(user)`` is
      True, and never touches the limited trial's own button/callback_data.
+     Also: ``limited_available`` independently hides/shows the limited
+     "Активировать" button (reachability fix — see
+     tests/test_trial_disabled_menu_gating.py for the screen/menu-entry side
+     of the same fix).
   2. ``activate_unlimited_trial`` handler (app/handlers/subscription/purchase.py):
      restriction gate, eligibility gate, success UI (mirrors
      ``activate_trial``'s), and each service-layer failure mode rendered as a
@@ -95,6 +99,42 @@ class TestGetTrialKeyboard:
         get_trial_keyboard('ru', user=sentinel_user)
 
         assert seen == [sentinel_user]
+
+    def test_limited_available_false_hides_the_limited_button(self, monkeypatch):
+        """A limited-used-but-unlimited-eligible user sees only the unlimited
+        row + Back — the limited 'Активировать' must not appear at all."""
+        from app.keyboards.inline import get_trial_keyboard
+
+        monkeypatch.setattr(
+            'app.services.unlimited_trial_service.unlimited_trial_available',
+            lambda user: True,
+        )
+
+        markup = get_trial_keyboard('ru', user=MagicMock(spec=User), limited_available=False)
+
+        assert _keyboard_callbacks(markup) == ['activate_unlimited_trial', 'back_to_menu']
+
+    def test_limited_available_true_keeps_both_buttons(self, monkeypatch):
+        """Explicit limited_available=True (the default) alongside an
+        unlimited-eligible user shows both offers together."""
+        from app.keyboards.inline import get_trial_keyboard
+
+        monkeypatch.setattr(
+            'app.services.unlimited_trial_service.unlimited_trial_available',
+            lambda user: True,
+        )
+
+        markup = get_trial_keyboard('ru', user=MagicMock(spec=User), limited_available=True)
+
+        assert _keyboard_callbacks(markup) == ['activate_unlimited_trial', 'trial_activate', 'back_to_menu']
+
+    def test_limited_available_false_without_unlimited_still_shows_back(self):
+        """Neither offer available -> not an empty keyboard, at least Back."""
+        from app.keyboards.inline import get_trial_keyboard
+
+        markup = get_trial_keyboard('ru', limited_available=False)
+
+        assert _keyboard_callbacks(markup) == ['back_to_menu']
 
 
 # --- activate_unlimited_trial handler -------------------------------------

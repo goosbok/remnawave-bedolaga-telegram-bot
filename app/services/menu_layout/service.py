@@ -790,8 +790,12 @@ class MenuLayoutService:
         if conditions.get('show_trial') is True:
             if context.has_had_paid_subscription or context.has_active_subscription:
                 return False
-            # Триал отключён глобально (нулевая длительность или для всех типов)
-            if settings.TRIAL_DURATION_DAYS <= 0 or settings.TRIAL_DISABLED_FOR == 'all':
+            # Триал отключён глобально (нулевая длительность или для всех типов) —
+            # но НЕ тупик, если включён безлимит-триал (Artemida): фиче-левел гейт,
+            # без пользовательской проверки (её делает сам экран триала).
+            if (settings.TRIAL_DURATION_DAYS <= 0 or settings.TRIAL_DISABLED_FOR == 'all') and not (
+                settings.ARTEMIDA_ENABLED and settings.ARTEMIDA_TRIAL_ENABLED
+            ):
                 return False
 
         # show_buy

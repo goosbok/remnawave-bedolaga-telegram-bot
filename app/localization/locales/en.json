@@ -1645,6 +1645,7 @@
   "TRIAL_ALREADY_USED": "❌ The trial subscription has already been used",
   "UNLIMITED_TRIAL_ACTIVATE_BUTTON": "🚀 Unlimited · 1 day",
   "UNLIMITED_TRIAL_UNAVAILABLE": "🚀 The unlimited trial period is unavailable",
+  "TRIAL_OFFER_UNLIMITED_ONLY": "🚀 An unlimited trial period is available for 1 day",
   "TRIAL_AVAILABLE": "\n🎁 <b>Trial subscription</b>\n\nYou can get a trial plan{price_line}:\n\n⏰ <b>Duration:</b> {days} days\n📈 <b>Traffic:</b> {traffic}{devices_line}\n🌍 <b>Server:</b> {server_name}\n\nActivate the trial subscription?\n",
   "TRIAL_AVAILABLE_DEVICES_LINE": "\n📱 <b>Devices:</b> {devices} pcs",
   "TRIAL_PAYMENT_PRICE_LINE": "\n💳 <b>Activation price:</b> {price}",

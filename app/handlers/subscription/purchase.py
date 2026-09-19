@@ -616,10 +616,17 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
 
     texts = get_texts(db_user.language)
 
-    # Триал отключён глобально (нулевая длительность) либо для этого типа пользователя
-    if settings.TRIAL_DURATION_DAYS <= 0 or settings.is_trial_disabled_for_user(
-        getattr(db_user, 'auth_type', 'telegram')
-    ):
+    from app.services.unlimited_trial_service import unlimited_trial_available
+
+    unlimited_ok = unlimited_trial_available(db_user)
+
+    # Триал отключён глобально (нулевая длительность) либо для этого типа пользователя.
+    # Тупик ТОЛЬКО если и безлимит-триал (Artemida) недоступен тоже — иначе экран
+    # должен остаться достижимым и предложить его вместо лимитного.
+    if (
+        settings.TRIAL_DURATION_DAYS <= 0
+        or settings.is_trial_disabled_for_user(getattr(db_user, 'auth_type', 'telegram'))
+    ) and not unlimited_ok:
         await callback.message.edit_text(
             texts.t('TRIAL_DISABLED_FOR_USER_TYPE', 'Пробный период недоступен'),
             reply_markup=get_back_keyboard(db_user.language),
@@ -627,13 +634,30 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
         await callback.answer()
         return
 
-    # Проверяем, использовал ли пользователь триал
+    # Проверяем, использовал ли пользователь (лимитный) триал. Тот же принцип:
+    # не тупик, если всё же доступен безлимит-триал.
     # PENDING триальные подписки не считаются - пользователь может повторить оплату
     # Multi-tariff note: db_user.subscription returns the first active/most recent
     # subscription. In multi-tariff mode a user can have multiple subscriptions, but
     # trial eligibility is still "has any subscription" so this check is correct.
-    if db_user.is_trial_already_used():
+    if db_user.is_trial_already_used() and not unlimited_ok:
         await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=get_back_keyboard(db_user.language))
+        await callback.answer()
+        return
+
+    limited_ok = (
+        settings.TRIAL_DURATION_DAYS > 0
+        and not settings.is_trial_disabled_for_user(getattr(db_user, 'auth_type', 'telegram'))
+        and not db_user.is_trial_already_used()
+    )
+
+    if not limited_ok:
+        # Только безлимит-триал доступен — лимитные параметры (дни/трафик/сервер)
+        # тут не при чём, и лимитный текст (TRIAL_AVAILABLE) был бы неверным.
+        await callback.message.edit_text(
+            texts.t('TRIAL_OFFER_UNLIMITED_ONLY', '🚀 Доступен безлимитный пробный период на 1 день'),
+            reply_markup=get_trial_keyboard(db_user.language, user=db_user, limited_available=False),
+        )
         await callback.answer()
         return
 
@@ -730,7 +754,9 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
         price_line=price_line,
     )
 
-    await callback.message.edit_text(trial_text, reply_markup=get_trial_keyboard(db_user.language, user=db_user))
+    await callback.message.edit_text(
+        trial_text, reply_markup=get_trial_keyboard(db_user.language, user=db_user, limited_available=True)
+    )
     await callback.answer()
 
 

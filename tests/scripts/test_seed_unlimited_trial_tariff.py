@@ -29,7 +29,10 @@ async def test_apply_on_empty_db_creates_the_tariff(monkeypatch):
         assert tariff.is_trial_available is True
         assert tariff.traffic_limit_gb == 0
         assert tariff.device_limit == 2
-        assert tariff.is_active is True
+        # Как и обычный триальный тариф (см. get_trial_tariff): специально
+        # is_active=False, чтобы не отображаться в общем списке покупки
+        # (иначе — бесплатный тариф на 30 дней, доступный всем напрямую).
+        assert tariff.is_active is False
 
 
 async def test_running_it_again_is_a_noop(monkeypatch):
@@ -49,8 +52,12 @@ async def test_running_it_again_is_a_noop(monkeypatch):
 
 
 async def test_resolver_finds_the_seeded_tariff(monkeypatch):
+    """The seeded tariff is is_active=False (hidden from the purchase list) but
+    must still be resolvable for the trial — proves it isn't just hidden, but
+    inertly unusable too."""
     async with memory_session(monkeypatch, _TABLES) as db:
         tariff, _created = await seed_unlimited_trial_tariff(db, apply=True)
+        assert tariff.is_active is False
 
         resolved = await resolve_unlimited_trial_tariff(db)
 

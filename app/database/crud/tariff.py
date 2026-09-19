@@ -97,7 +97,8 @@ async def count_tariffs(db: AsyncSession, *, include_inactive: bool = False) -> 
 
 
 async def get_trial_tariff(db: AsyncSession) -> Tariff | None:
-    """Получает тариф, доступный для триала (is_trial_available=True).
+    """Получает тариф, доступный для ЛИМИТИРОВАННОГО (свои ноды) триала
+    (is_trial_available=True).
 
     Триальный тариф может быть неактивным — это сделано специально,
     чтобы он не отображался в списке покупки, но использовался для триала
@@ -105,10 +106,17 @@ async def get_trial_tariff(db: AsyncSession) -> Tariff | None:
 
     Сортируется по updated_at DESC, чтобы вернуть последний установленный
     триальный тариф (на случай если их несколько).
+
+    Провайдер-сплит: безлимит-триал (Artemida) — отдельный резолвер
+    (``resolve_unlimited_trial_tariff``, ``app/services/unlimited_trial_service.py``);
+    здесь явно исключаем provider='artemida', иначе при обоих
+    is_trial_available=True этот резолвер (сортировка по updated_at) мог бы
+    вернуть artemida-тариф, и лимитированный триал ушёл бы провижиниться
+    через внешнего вендора.
     """
     query = (
         select(Tariff)
-        .where(Tariff.is_trial_available.is_(True))
+        .where(Tariff.is_trial_available.is_(True), Tariff.provider != 'artemida')
         .options(selectinload(Tariff.allowed_promo_groups))
         .order_by(Tariff.updated_at.desc().nullslast(), Tariff.id.desc())
         .limit(1)
@@ -118,7 +126,12 @@ async def get_trial_tariff(db: AsyncSession) -> Tariff | None:
 
 
 async def set_trial_tariff(db: AsyncSession, tariff_id: int) -> Tariff | None:
-    """Устанавливает тариф как триальный (снимает флаг с других тарифов)."""
+    """Устанавливает тариф как триальный (снимает флаг с других тарифов).
+
+    Не провайдер-осведомлён (в отличие от get_trial_tariff выше): снимает
+    is_trial_available со ВСЕХ тарифов, включая artemida — сегодня это не
+    трогаем, админка ими пока не управляет (отдельный follow-up).
+    """
     # Снимаем флаг с всех тарифов
     await db.execute(Tariff.__table__.update().values(is_trial_available=False))
 

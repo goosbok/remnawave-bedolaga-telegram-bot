@@ -80,6 +80,20 @@ class TestResolveUnlimitedTrialTariff:
         db.get.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_returns_tariff_by_explicit_id_even_when_inactive(self):
+        """Триальный тариф специально может быть is_active=False (скрыт из списка
+        покупки, как и обычный триал по get_trial_tariff) — резолвиться он всё
+        равно должен."""
+        db = AsyncMock()
+        db.get.return_value = _tariff(id=5, is_active=False)
+        cfg = _cfg(ARTEMIDA_TRIAL_TARIFF_ID=5)
+
+        result = await resolve_unlimited_trial_tariff(db, cfg=cfg)
+
+        assert result is not None
+        assert result.id == 5
+
+    @pytest.mark.asyncio
     async def test_returns_none_when_explicit_id_is_remnawave_tariff(self):
         db = AsyncMock()
         db.get.return_value = _tariff(provider='remnawave')

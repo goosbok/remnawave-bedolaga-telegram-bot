@@ -46,21 +46,21 @@ def unlimited_trial_available(user, *, cfg=settings) -> bool:
 
 
 async def resolve_unlimited_trial_tariff(db, cfg=settings):
-    """Тариф безлимит-триала: по ARTEMIDA_TRIAL_TARIFF_ID, иначе первый активный
-    artemida-тариф с is_trial_available. None если нет."""
+    """Тариф безлимит-триала: по ARTEMIDA_TRIAL_TARIFF_ID, иначе первый
+    artemida-тариф с is_trial_available. None если нет.
+
+    Без требования is_active: как и у обычного (get_trial_tariff),
+    триальный тариф специально может быть неактивным, чтобы не отображаться
+    в списке покупки, но всё равно резолвиться для триала."""
     from app.database.models import Tariff
 
     if cfg.ARTEMIDA_TRIAL_TARIFF_ID:
         tariff = await db.get(Tariff, cfg.ARTEMIDA_TRIAL_TARIFF_ID)
-        return (
-            tariff
-            if tariff and tariff.provider == 'artemida' and tariff.is_trial_available and tariff.is_active
-            else None
-        )
+        return tariff if tariff and tariff.provider == 'artemida' and tariff.is_trial_available else None
 
     result = await db.execute(
         select(Tariff)
-        .where(Tariff.provider == 'artemida', Tariff.is_trial_available.is_(True), Tariff.is_active.is_(True))
+        .where(Tariff.provider == 'artemida', Tariff.is_trial_available.is_(True))
         .order_by(Tariff.id)
         .limit(1)
     )

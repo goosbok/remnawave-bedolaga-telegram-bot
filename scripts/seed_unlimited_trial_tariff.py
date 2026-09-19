@@ -92,7 +92,12 @@ async def seed_unlimited_trial_tariff(
     tariff = await create_tariff(
         db=db,
         name=TARIFF_NAME,
-        is_active=True,
+        # Как и обычный триальный тариф (см. докстринг get_trial_tariff):
+        # is_active=False специально, чтобы тариф не отображался в списке
+        # покупки (иначе это бесплатный тариф на 30 дней в общем списке — обход
+        # оплаты), но is_trial_available=True всё равно резолвится для триала
+        # (resolve_unlimited_trial_tariff больше не требует is_active).
+        is_active=False,
         is_trial_available=True,
         traffic_limit_gb=0,
         device_limit=2,

@@ -250,6 +250,9 @@ class Settings(BaseSettings):
     ARTEMIDA_BRAND_TITLE: str = 'MAX VPN'
     ARTEMIDA_BRAND_SUPPORT_URL: str = ''
 
+    ARTEMIDA_TRIAL_ENABLED: bool = False
+    ARTEMIDA_TRIAL_TARIFF_ID: int = 0  # 0 = резолвить по provider='artemida' + is_trial_available
+
     # Ограниченный grace-доступ для продления истёкшей подписки.
     # Режимы: false (выключено), observe (только журнал), true (активно),
     # drain (не выдавать новые grace-сессии, но завершать уже открытые).

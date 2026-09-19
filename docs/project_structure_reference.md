@@ -2962,6 +2962,9 @@
 - `tests/test_trial_disabled_menu_gating.py` — Python-модуль
   Классы: нет
   Функции: `test_keyboard_hides_trial_when_duration_zero`, `test_keyboard_hides_trial_when_disabled_for_all`, `test_menu_layout_hides_trial_when_disabled`, `test_show_trial_offer_blocks_when_duration_zero`, `test_activate_trial_blocks_when_duration_zero`
+- `tests/test_unlimited_trial_settings.py` — Python-модуль
+  Классы: нет
+  Функции: `test_unlimited_trial_settings_default_off`, `test_unlimited_trial_settings_overrides`
 - `tests/test_user_cart_service.py` — Python-модуль
   Классы: `MockRedis` (5 методов)
   Функции: `mock_redis`, `user_cart_service`, `test_save_user_cart` — Тест сохранения корзины пользователя, `test_get_user_cart` — Тест получения корзины пользователя, `test_get_user_cart_not_found` — Тест получения несуществующей корзины пользователя, `test_delete_user_cart` — Тест удаления корзины пользователя, `test_delete_user_cart_not_found` — Тест удаления несуществующей корзины пользователя, `test_has_user_cart` — Тест проверки наличия корзины пользователя, `test_has_user_cart_not_found` — Тест проверки отсутствия корзины пользователя, `test_save_cart_with_return_to_cart_sets_intent` — return_to_cart=True ставит метку намерения пополнить ради корзины., `test_save_cart_without_return_to_cart_no_intent` — Обычное сохранение корзины (без return_to_cart) метку НЕ ставит., `test_has_topup_intent_is_non_destructive` — Проверка наличия метки не гасит её — частичное пополнение может до-сработать., `test_clear_topup_intent` — clear_topup_intent гасит метку (вызывается после успешной авто-покупки)., `test_delete_user_cart_clears_intent` — Очистка корзины снимает и метку намерения, чтобы она не «висела»., `test_has_topup_intent_false_when_redis_down` — Redis недоступен → намерение считается отсутствующим (не списываем молча).

@@ -3743,6 +3743,9 @@
 - `tests/live/__init__.py` — Python-модуль
   Классы: нет
   Функции: нет
+- `tests/live/test_artemida_chain_live.py` — Python-модуль
+  Классы: нет
+  Функции: `test_serving_chain_rebrands_real_vendor_links`
 - `tests/live/test_artemida_live.py` — Python-модуль
   Классы: нет
   Функции: `test_trial_lifecycle_against_real_api` — balance → создать trial (2 ₽) → subscription-links (с ретраем) → всегда отозвать ключ.

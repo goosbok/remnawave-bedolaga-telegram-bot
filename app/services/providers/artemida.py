@@ -165,3 +165,10 @@ class ArtemidaProvider:
         if key.status is not None and key.status != 'ACTIVE':
             logger.warning('Дрейф статуса ключа Artemida', subscription_id=subscription.id, vendor_status=key.status)
         logger.info('Синхронизация ключа Artemida', subscription_id=subscription.id, key_id=subscription.external_ref)
+
+    async def fetch_links(self, subscription: Subscription) -> list[str]:
+        if not subscription.external_ref:
+            return []
+        async with self._client_factory() as client:
+            data = await client.get_subscription_links(subscription.external_ref)
+        return list(data.get('links') or [])

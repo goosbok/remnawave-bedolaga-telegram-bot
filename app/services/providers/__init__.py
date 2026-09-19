@@ -9,8 +9,20 @@ class _RemnawaveMarker:
     name = 'remnawave'
 
 
+_PROVIDERS = {'artemida': ArtemidaProvider}
+
+
+def register_provider(name, factory):
+    """For tests / future vendors."""
+    _PROVIDERS[name] = factory
+
+
+def get_provider_by_name(name):
+    if not name or name == 'remnawave':
+        return _RemnawaveMarker()
+    factory = _PROVIDERS.get(name)
+    return factory() if factory else None
+
+
 def get_provider(tariff):
-    provider = getattr(tariff, 'provider', 'remnawave') or 'remnawave'
-    if provider == 'artemida':
-        return ArtemidaProvider()
-    return _RemnawaveMarker()
+    return get_provider_by_name(getattr(tariff, 'provider', 'remnawave') or 'remnawave')

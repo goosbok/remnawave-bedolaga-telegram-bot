@@ -54,3 +54,12 @@ class SubscriptionDevicesRequest(BaseModel):
 
 class SubscriptionSquadRequest(BaseModel):
     squad_uuid: str
+
+
+class SubscriptionMoveProviderRequest(BaseModel):
+    provider: str
+
+
+class SubscriptionMoveProviderResponse(BaseModel):
+    external_provider: str | None = None
+    subscription_url: str | None = None

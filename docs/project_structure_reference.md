@@ -2272,7 +2272,7 @@
   Функции: `receive_subscription_event`, `list_subscription_event_logs`
 - `app/webapi/routes/subscriptions.py` — Python-модуль
   Классы: нет
-  Функции: `list_subscriptions`, `get_subscription`, `create_subscription`, `extend_subscription_endpoint`, `add_subscription_traffic_endpoint`, `add_subscription_devices_endpoint`, `add_subscription_squad_endpoint`, `remove_subscription_squad_endpoint`, `delete_subscription` — Деактивировать подписку.
+  Функции: `list_subscriptions`, `get_subscription`, `create_subscription`, `extend_subscription_endpoint`, `add_subscription_traffic_endpoint`, `add_subscription_devices_endpoint`, `add_subscription_squad_endpoint`, `remove_subscription_squad_endpoint`, `move_subscription_provider_endpoint` — Manual, admin-only trigger: move ``subscription_id`` onto another vendor., `delete_subscription` — Деактивировать подписку.
 - `app/webapi/routes/tickets.py` — Python-модуль
   Классы: нет
   Функции: `list_tickets`, `get_ticket`, `update_ticket_status`, `update_ticket_priority`, `update_reply_block`, `clear_reply_block`, `reply_to_ticket`, `get_ticket_message_media`
@@ -2370,7 +2370,7 @@
   Классы: `SubscriptionEventCreate` (1 методов), `SubscriptionEventResponse`, `SubscriptionEventListResponse`
   Функции: нет
 - `app/webapi/schemas/subscriptions.py` — Python-модуль
-  Классы: `SubscriptionResponse`, `SubscriptionCreateRequest`, `SubscriptionExtendRequest`, `SubscriptionTrafficRequest`, `SubscriptionDevicesRequest`, `SubscriptionSquadRequest`
+  Классы: `SubscriptionResponse`, `SubscriptionCreateRequest`, `SubscriptionExtendRequest`, `SubscriptionTrafficRequest`, `SubscriptionDevicesRequest`, `SubscriptionSquadRequest`, `SubscriptionMoveProviderRequest`, `SubscriptionMoveProviderResponse`
   Функции: нет
 - `app/webapi/schemas/tickets.py` — Python-модуль
   Классы: `TicketMediaItemResponse`, `TicketMessageResponse`, `TicketResponse`, `TicketStatusUpdateRequest`, `TicketPriorityUpdateRequest`, `TicketReplyBlockRequest`, `TicketReplyRequest`, `TicketReplyResponse`, `TicketMediaResponse`
@@ -4516,6 +4516,9 @@
 
 ### tests/webapi
 
+- `tests/webapi/test_admin_move_provider.py` — Python-модуль
+  Классы: нет
+  Функции: `test_move_provider_authorized_calls_swap_service`, `test_move_provider_unknown_subscription_404`, `test_move_provider_bad_target_returns_400`, `test_move_provider_vendor_failure_returns_502`, `test_move_provider_unauthorized_without_token_401` — No dependency override here — the real ``require_api_token`` runs and must
 - `tests/webapi/test_artemida_sub_route.py` — Python-модуль
   Классы: нет
   Функции: `test_route_returns_rebranded_body`, `test_empty_links_returns_200_with_empty_body`, `test_unknown_token_404`, `test_subscription_with_unknown_provider_returns_404`, `test_vendor_error_returns_502`

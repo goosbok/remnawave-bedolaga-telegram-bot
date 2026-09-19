@@ -36,13 +36,29 @@ logger = structlog.get_logger(__name__)
 
 
 def _provision_days(subscription) -> int:
-    """Дни оставшегося срока для вызова вендора (end_date задаётся до провижининга)."""
+    """Полный неизменный срок подписки для вызова вендора.
+
+    Раньше считалось от «сейчас» (end_date - now()), но это значение УМЕНЬШАЕТСЯ
+    по мере ожидания — ретрай провижининга (например, из remnawave_retry_queue)
+    пересчитал бы days меньшим числом и отправил бы вендору ДРУГОЕ тело запроса
+    под ТЕМ ЖЕ идемпотентным ключом чанка → вендорский 409 idempotency_conflict →
+    ретрай зависает навсегда. start_date и end_date оба фиксируются при создании
+    подписки, поэтому их разница — единственное стабильное при повторных попытках
+    значение полного срока (именно его и нужно провижинить у вендора).
+    """
     end = subscription.end_date
-    if end is None:
+    # getattr, not a plain attribute access: some call sites exercise this against
+    # lightweight test doubles that only set end_date, and end_date is already None
+    # for those (short-circuiting the check below) — but a plain `.start_date` would
+    # still raise AttributeError before that check ever runs.
+    start = getattr(subscription, 'start_date', None)
+    if end is None or start is None:
         return 0
     if end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
-    return max(1, (end - datetime.now(UTC)).days)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    return max(1, (end - start).days)
 
 
 class _ArtemidaProvisionResult:

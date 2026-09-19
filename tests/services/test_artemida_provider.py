@@ -56,6 +56,8 @@ def test_chunk_days_splits_into_at_most_90_day_pieces():
     assert _chunk_days(180) == [90, 90]
     assert _chunk_days(360) == [90, 90, 90, 90]
     assert _chunk_days(100) == [90, 10]
+    assert _chunk_days(91) == [90, 1]
+    assert _chunk_days(1) == [1]
 
 
 def test_chunk_days_rejects_non_positive_days():
@@ -196,6 +198,7 @@ async def test_update_renew_uses_end_date_idempotency_key_and_sets_device_limit(
     client.renew_key.assert_awaited_once()
     kwargs = client.renew_key.await_args.kwargs
     assert kwargs['idempotency_key'] == f'sub-42-renew-{int(end_date.timestamp())}-0'
+    assert kwargs['devices'] == 4
     assert sub.device_limit == 4
 
 
@@ -217,12 +220,34 @@ async def test_update_renew_days_180_chunks_into_two_90_day_renew_calls():
     assert calls[0].kwargs['devices'] == 4
     assert calls[0].kwargs['idempotency_key'] == f'sub-42-renew-{ts}-0'
 
+    # devices is sent on EVERY chunk (not just the first): whether the vendor keeps
+    # the device count unchanged when the field is omitted from a renew call is
+    # unverified, so each chunk explicitly asserts the intended device count.
     assert calls[1].args == ('key_9',)
     assert calls[1].kwargs['days'] == 90
-    assert calls[1].kwargs['devices'] is None
+    assert calls[1].kwargs['devices'] == 4
     assert calls[1].kwargs['idempotency_key'] == f'sub-42-renew-{ts}-1'
 
     assert sub.device_limit == 4
+
+
+@pytest.mark.asyncio
+async def test_update_renew_reraises_when_second_chunk_fails_and_leaves_device_limit_unchanged():
+    # 180 days = two 90-day renew chunks. Failing the 2nd must propagate and must NOT
+    # apply subscription.device_limit — that assignment only happens after the loop,
+    # so a mid-chunk failure must leave the subscription's own device_limit untouched
+    # (mirrors test_provision_reraises_when_second_chunk_renew_fails_and_leaves_subscription_unchanged).
+    end_date = datetime(2026, 10, 1, 12, 0, 0, tzinfo=UTC)
+    sub = _subscription(end_date=end_date, external_ref='key_9', device_limit=3)
+    client = AsyncMock()
+    client.renew_key.side_effect = [None, ArtemidaInsufficientBalance('no funds')]
+    provider = ArtemidaProvider(client_factory=lambda: _ctx(client))
+
+    with pytest.raises(ArtemidaInsufficientBalance):
+        await provider.update(db=AsyncMock(), subscription=sub, days=180, devices=4)
+
+    assert client.renew_key.await_count == 2
+    assert sub.device_limit == 3
 
 
 @pytest.mark.asyncio

@@ -64,10 +64,12 @@ async def test_artemida_provision_e2e(monkeypatch):
         db.add(tariff)
         await db.flush()
 
+        now = datetime.now(UTC)
         subscription = Subscription(
             user_id=1,
             tariff_id=tariff.id,
-            end_date=datetime.now(UTC) + timedelta(days=30),
+            start_date=now,
+            end_date=now + timedelta(days=30),
             status=SubscriptionStatus.PENDING.value,
         )
         db.add(subscription)
@@ -91,6 +93,7 @@ async def test_artemida_provision_e2e(monkeypatch):
         assert fake_client.kwargs['devices'] == 3
         assert fake_client.kwargs['customer_ref'] == str(subscription.id)
         assert fake_client.kwargs['idempotency_key'] == f'sub-{subscription.id}-provision-0'
-        # end_date is set 30 days out; _provision_days() truncates to whole days,
-        # so allow 29 due to elapsed time between construction and the call.
-        assert fake_client.kwargs['days'] >= 29
+        # _provision_days() now derives from the fixed start_date/end_date pair (not
+        # from "now"), so with start_date and end_date exactly 30 days apart this is
+        # exact rather than approximate — no elapsed-time slack needed.
+        assert fake_client.kwargs['days'] == 30

@@ -67,12 +67,30 @@ class ArtemidaProvider:
                 customer_ref=str(subscription.id),
                 idempotency_key=f'sub-{subscription.id}-provision-0',
             )
-            for i, chunk in enumerate(chunks[1:], start=1):
-                await client.renew_key(
-                    key.id,
-                    days=chunk,
-                    idempotency_key=f'sub-{subscription.id}-provision-{i}',
+            chunks_done = 1  # the create_key chunk (chunk 0) already succeeded
+            try:
+                for i, chunk in enumerate(chunks[1:], start=1):
+                    await client.renew_key(
+                        key.id,
+                        days=chunk,
+                        idempotency_key=f'sub-{subscription.id}-provision-{i}',
+                    )
+                    chunks_done += 1
+            except Exception:
+                # A chunk AFTER the first failed: the vendor key was already created
+                # (and possibly renewed further) before this failure, so the owner has
+                # already paid for chunks_done/len(chunks) chunks of an orphaned,
+                # partial-coverage key — distinct from an ordinary single-call failure,
+                # where nothing was ever charged. Flag it for ops, then propagate as-is
+                # so the caller's rollback path (which does not touch the vendor) runs.
+                logger.warning(
+                    'Artemida provision: частичная оплата — создан ключ, но не все чанки продлены',
+                    subscription_id=subscription.id,
+                    key_id=key.id,
+                    chunks_total=len(chunks),
+                    chunks_done=chunks_done,
                 )
+                raise
         subscription.external_provider = 'artemida'
         subscription.external_ref = key.id
         subscription.device_limit = devices
@@ -95,10 +113,14 @@ class ArtemidaProvider:
                 chunks = _chunk_days(days)
                 ts = int(subscription.end_date.timestamp())
                 for i, chunk in enumerate(chunks):
+                    # devices is sent on EVERY chunk, not just the first: whether the
+                    # vendor leaves the device count unchanged when the field is
+                    # omitted from a renew call is unverified, so each chunk asserts
+                    # the intended device count explicitly rather than relying on that.
                     await client.renew_key(
                         subscription.external_ref,
                         days=chunk,
-                        devices=devices if i == 0 else None,
+                        devices=devices,
                         idempotency_key=f'sub-{subscription.id}-renew-{ts}-{i}',
                     )
                 if devices is not None:

@@ -1767,6 +1767,8 @@
   "TRIAL_ACTIVATED": "🎉 Тестовая подписка активирована!",
   "TRIAL_ACTIVATE_BUTTON": "🎁 Активировать",
   "TRIAL_ALREADY_USED": "❌ Тестовая подписка уже была использована",
+  "UNLIMITED_TRIAL_ACTIVATE_BUTTON": "🚀 Безлимит · 1 день",
+  "UNLIMITED_TRIAL_UNAVAILABLE": "🚀 Безлимитный пробный период недоступен",
   "TRIAL_AVAILABLE": "\n🎁 <b>Тестовая подписка</b>\n\nВы можете получить тестовую подписку{price_line}:\n\n⏰ <b>Период:</b> {days} дней\n📈 <b>Трафик:</b> {traffic}{devices_line}\n🌍 <b>Сервер:</b> {server_name}\n\nАктивировать тестовую подписку?\n",
   "TRIAL_AVAILABLE_DEVICES_LINE": "\n📱 <b>Устройства:</b> {devices} шт.",
   "TRIAL_PAYMENT_PRICE_LINE": "\n💳 <b>Стоимость активации:</b> {price}",

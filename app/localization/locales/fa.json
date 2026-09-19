@@ -1767,6 +1767,8 @@
   "TRIAL_ACTIVATED": "🎉 اشتراک آزمایشی فعال شد!",
   "TRIAL_ACTIVATE_BUTTON": "🎁 فعال‌سازی",
   "TRIAL_ALREADY_USED": "❌ آزمایشی قبلاً استفاده شده",
+  "UNLIMITED_TRIAL_ACTIVATE_BUTTON": "🚀 نامحدود · 1 روز",
+  "UNLIMITED_TRIAL_UNAVAILABLE": "🚀 دوره آزمایشی نامحدود در دسترس نیست",
   "TRIAL_AVAILABLE": "\n🎁 <b>اشتراک آزمایشی</b>\n\nمی‌توانید اشتراک آزمایشی دریافت کنید{price_line}:\n\n⏰ <b>دوره:</b> {days} روز\n📈 <b>ترافیک:</b> {traffic}{devices_line}\n🌍 <b>سرور:</b> {server_name}\n\nفعال شود؟\n",
   "TRIAL_AVAILABLE_DEVICES_LINE": "\n📱 <b>دستگاه‌ها:</b> {devices} عدد",
   "TRIAL_PAYMENT_PRICE_LINE": "\n💳 <b>هزینه فعال‌سازی:</b> {price}",

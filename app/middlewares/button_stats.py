@@ -78,6 +78,7 @@ BUILTIN_CALLBACKS: set[str] = {
     'my_tickets',
     # Триал
     'trial_activate',
+    'activate_unlimited_trial',
     # Покупка
     'clear_saved_cart',
     'subscription_confirm',

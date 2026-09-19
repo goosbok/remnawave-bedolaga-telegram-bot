@@ -1199,7 +1199,7 @@
   Функции: `claim_discount_offer`, `handle_promo_offer_close`
 - `app/handlers/subscription/purchase.py` — Python-модуль
   Классы: нет
-  Функции: `show_subscription_info`, `show_trial_offer`, `activate_trial`, `start_subscription_purchase`, `save_cart_and_redirect_to_topup`, `return_to_saved_cart`, `handle_extend_subscription`, `confirm_extend_subscription`, `select_period`, `select_devices`, `devices_continue`, `confirm_purchase`, `resume_subscription_checkout`, `create_paid_subscription_with_traffic_mode`, `handle_subscription_settings`, `clear_saved_cart`, `handle_toggle_daily_subscription_pause` — Переключает паузу суточной подписки., `handle_trial_pay_with_balance` — Обрабатывает оплату триала с баланса., `handle_trial_payment_method` — Обрабатывает выбор метода оплаты для платного триала., `register_handlers`, `handle_simple_subscription_purchase` — Обрабатывает простую покупку подписки.
+  Функции: `show_subscription_info`, `show_trial_offer`, `activate_trial`, `activate_unlimited_trial` — Активация безлимит-триала (Artemida)., `start_subscription_purchase`, `save_cart_and_redirect_to_topup`, `return_to_saved_cart`, `handle_extend_subscription`, `confirm_extend_subscription`, `select_period`, `select_devices`, `devices_continue`, `confirm_purchase`, `resume_subscription_checkout`, `create_paid_subscription_with_traffic_mode`, `handle_subscription_settings`, `clear_saved_cart`, `handle_toggle_daily_subscription_pause` — Переключает паузу суточной подписки., `handle_trial_pay_with_balance` — Обрабатывает оплату триала с баланса., `handle_trial_payment_method` — Обрабатывает выбор метода оплаты для платного триала., `register_handlers`, `handle_simple_subscription_purchase` — Обрабатывает простую покупку подписки.
 - `app/handlers/subscription/revoke.py` — Python-модуль
   Классы: нет
   Функции: `start_subscription_revoke` — Show revoke confirmation for classic single-subscription mode., `confirm_subscription_revoke` — Execute revoke for classic or multi-tariff mode (uses FSM state for multi)., `start_multi_revoke` — Show revoke confirmation for multi-tariff mode (callback_data = 'sr:{sub_id}').
@@ -3694,6 +3694,9 @@
 - `tests/handlers/test_ticket_view_opens_last_page.py` — Python-модуль
   Классы: нет
   Функции: `test_opens_on_the_last_page_when_no_page_requested`, `test_explicit_page_from_pagination_button_wins`
+- `tests/handlers/test_unlimited_trial_button.py` — Python-модуль
+  Классы: `TestGetTrialKeyboard` (4 методов)
+  Функции: `test_activate_unlimited_trial_blocks_when_restricted` — Mirrors activate_trial's own restriction_subscription gate., `test_activate_unlimited_trial_shows_unavailable_when_gate_fails`, `test_activate_unlimited_trial_success_shows_connect_steps`, `test_activate_unlimited_trial_success_falls_back_when_no_link` — Falls back to the generic text when there is no subscription_url yet., `test_activate_unlimited_trial_handles_service_failures_gracefully` — Every service failure mode must land on a normal keyboard screen., `test_activate_unlimited_trial_is_registered_alongside_trial_activate` — register_handlers wires callback_data == 'activate_unlimited_trial'.
 - `tests/handlers/test_user_messages_list_refresh.py` — Python-модуль
   Классы: нет
   Функции: `test_render_list_edits_message_and_never_answers`, `test_delete_confirm_renders_via_helper_and_answers_once`

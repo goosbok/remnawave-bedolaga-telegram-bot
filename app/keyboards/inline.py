@@ -1400,18 +1400,33 @@ def get_insufficient_balance_keyboard_with_cart(
     return keyboard
 
 
-def get_trial_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
+def get_trial_keyboard(language: str = 'ru', user: User | None = None) -> InlineKeyboardMarkup:
     texts = get_texts(language)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=texts.t('TRIAL_ACTIVATE_BUTTON', '🎁 Активировать'), callback_data='trial_activate'
-                ),
-                InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu'),
-            ]
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    if user is not None:
+        from app.services.unlimited_trial_service import unlimited_trial_available
+
+        if unlimited_trial_available(user):
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=texts.t('UNLIMITED_TRIAL_ACTIVATE_BUTTON', '🚀 Безлимит · 1 день'),
+                        callback_data='activate_unlimited_trial',
+                    )
+                ]
+            )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text=texts.t('TRIAL_ACTIVATE_BUTTON', '🎁 Активировать'), callback_data='trial_activate'
+            ),
+            InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu'),
         ]
     )
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_subscription_period_keyboard(

@@ -916,6 +916,16 @@ async def grant_reward_days(db: AsyncSession, user: User, days: int, tariff_id: 
             return DaysGrant(failure='no_subscription')
 
     if not created:
+        if subscription.is_external_vendor:
+            # Внешний вендор (Artemida): extend_subscription двинул бы локальный
+            # end_date, не продлив ключ у вендора, — платящий-ничего клиент потерял
+            # бы доступ на старом сроке. Награду не начисляем и строку не трогаем.
+            logger.warning(
+                'Дни за реферала не начислены: подписка обслуживается внешним вендором',
+                subscription_id=subscription.id,
+                program='referral',
+            )
+            return DaysGrant(failure='external_vendor')
         await extend_subscription(db, subscription, days)
 
     # Всё, что нужно после похода в панель, снимаем ДО него: при ошибке панельный

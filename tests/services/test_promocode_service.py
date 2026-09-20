@@ -543,6 +543,7 @@ async def test_subscription_days_promo_keeps_trial_a_trial(monkeypatch):
         tariff=trial_tariff,
         tariff_id=7,
         days_left=1,
+        is_external_vendor=False,
     )
 
     monkeypatch.setattr('app.services.promocode_service.RemnaWaveService', lambda: SimpleNamespace())
@@ -613,6 +614,7 @@ async def test_subscription_days_promo_revives_expired_sub_in_multi_tariff(monke
         tariff=SimpleNamespace(id=3, name='Pro', is_daily=False),
         tariff_id=3,
         days_left=0,
+        is_external_vendor=False,
     )
 
     monkeypatch.setattr('app.services.promocode_service.RemnaWaveService', lambda: SimpleNamespace())

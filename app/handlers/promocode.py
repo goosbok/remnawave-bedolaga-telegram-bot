@@ -218,6 +218,10 @@ async def process_promocode(message: types.Message, db_user: User, state: FSMCon
                 'PROMOCODE_TRAFFIC_NOT_APPLICABLE',
                 '❌ Этот промокод даёт только трафик, а у вашей подписки он безлимитный. Код не потрачен.',
             ),
+            'external_vendor_not_extendable': texts.t(
+                'PROMOCODE_EXTERNAL_VENDOR_NOT_EXTENDABLE',
+                '❌ Этот промокод нельзя применить к вашей текущей подписке. Код не потрачен.',
+            ),
             'daily_limit': texts.t(
                 'PROMO_DAILY_LIMIT',
                 '❌ Достигнут лимит активаций промокодов на сегодня. Попробуйте завтра.',

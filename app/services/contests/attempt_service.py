@@ -305,6 +305,17 @@ class ContestAttemptService:
                 subscription = await get_subscription_by_user_id(db, user_id)
             if not subscription:
                 return ''
+            if subscription.is_external_vendor:
+                # Внешний вендор (Artemida): extend_subscription двинул бы локальный
+                # end_date, не продлив ключ у вендора. Приз днями не начисляем — тем
+                # же исходом, что и «у победителя нет подписки» выше: победа за ним
+                # остаётся, но дни не выдаём.
+                logger.warning(
+                    'Приз конкурса (дни) не начислен: подписка обслуживается внешним вендором',
+                    subscription_id=subscription.id,
+                    program='contest_prize',
+                )
+                return ''
             days = int(prize_value) if prize_value.isdigit() else 1
             await extend_subscription(db, subscription, days)
             tariff_name = getattr(subscription.tariff, 'name', None) if subscription.tariff else None

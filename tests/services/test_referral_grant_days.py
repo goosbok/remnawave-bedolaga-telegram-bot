@@ -13,6 +13,7 @@ import itertools
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import structlog
 
 from app.config import settings
 from app.database.models import Base, Subscription, SubscriptionStatus, Tariff, User
@@ -495,6 +496,47 @@ class TestManySubscriptionsInMultiTariff:
             grant = await engine.grant_reward_days(db, await db.get(User, 1), 7, None)
 
             assert grant.subscription_id == paid.id
+
+
+class TestExternalVendorIsNotFreeExtended:
+    """Внешний вендор (Artemida): бесплатно продлевать нельзя.
+
+    ``extend_subscription`` двигает локальный ``end_date``, но ключ у вендора не
+    продлевает: платящий-ничего клиент молча теряет доступ на старом сроке вендора,
+    а честное продление стоило бы владельцу вендорскую плату за подарок. Награду
+    пропускаем как «не начислена», строку не трогаем.
+    """
+
+    @pytest.mark.asyncio
+    async def test_artemida_subscription_is_not_extended(self, monkeypatch):
+        async with memory_session(monkeypatch, TABLES) as db:
+            target = _subscription(1, tariff_id=PRO_TARIFF_ID)
+            target.external_provider = 'artemida'
+            target.external_ref = 'key_1'
+            await _seed(db, [target])
+            before = target.end_date
+
+            with structlog.testing.capture_logs() as logs:
+                grant = await engine.grant_reward_days(db, await db.get(User, 1), 7, PRO_TARIFF_ID)
+
+            assert grant.days == 0
+            assert grant.failure == 'external_vendor'
+            assert (await _reload(db, target.id)).end_date == before, 'вендорную подписку не двигаем'
+            assert any(
+                entry.get('log_level') == 'warning' and entry.get('subscription_id') == target.id for entry in logs
+            )
+
+    @pytest.mark.asyncio
+    async def test_remnawave_subscription_is_extended_as_before(self, monkeypatch):
+        async with memory_session(monkeypatch, TABLES) as db:
+            target = _subscription(1, tariff_id=PRO_TARIFF_ID)  # external_provider is None
+            await _seed(db, [target])
+            before = target.end_date
+
+            grant = await engine.grant_reward_days(db, await db.get(User, 1), 7, PRO_TARIFF_ID)
+
+            assert grant.days == 7
+            assert (await _reload(db, target.id)).end_date == before + timedelta(days=7)
 
 
 class TestClassicMode:

@@ -34,6 +34,9 @@ def _subscription(**overrides) -> SimpleNamespace:
         tariff_id=5,
         tariff=None,
         is_trial=False,
+        # is_external_vendor mirrors Subscription.is_external_vendor (True for a paid
+        # third-party vendor like Artemida, False for the own remnawave panel).
+        is_external_vendor=False,
         autopay_enabled=False,
         autopay_days_before=3,
     )
@@ -134,3 +137,76 @@ async def test_enable_autopay_rejected_for_trial_does_not_cancel_sbp(monkeypatch
 
     mock_cancel.assert_not_awaited()
     db.commit.assert_not_awaited()
+
+
+async def test_enable_autopay_rejected_for_external_vendor(monkeypatch):
+    """Go-live guard: enabling autopay on an external-vendor (Artemida) subscription is
+    rejected with 400 and never persisted. Autopay is disabled for these subs until the
+    paid vendor renewal is verified live in production; the background autopay paths do
+    not compensate (refund+revert) on a vendor error, so the toggle must not turn on."""
+    from fastapi import HTTPException
+
+    subscription = _subscription(is_external_vendor=True)
+    db = AsyncMock()
+
+    async def fake_resolve(resolve_db, u, subscription_id):
+        return subscription
+
+    mock_cancel = AsyncMock()
+    monkeypatch.setattr(
+        'app.cabinet.routes.subscription_modules.helpers.resolve_subscription',
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        'app.services.payment.platega.cancel_platega_recurring_for_subscription_safe',
+        mock_cancel,
+    )
+
+    try:
+        await route.update_autopay(
+            AutopayUpdateRequest(enabled=True),
+            user=_user(),
+            db=db,
+            subscription_id=None,
+        )
+        raise AssertionError('expected HTTPException for external-vendor subscription')
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert exc.detail == 'Автоплатёж недоступен для этого тарифа'
+
+    # Rejected before persisting and before any SBP-cancel side effect.
+    assert subscription.autopay_enabled is False
+    db.commit.assert_not_awaited()
+    mock_cancel.assert_not_awaited()
+
+
+async def test_disable_autopay_allowed_for_external_vendor(monkeypatch):
+    """Disabling autopay must still work for an external-vendor sub — anyone who somehow
+    has it on can turn it off. Only the enable path is guarded."""
+    subscription = _subscription(is_external_vendor=True, autopay_enabled=True)
+    db = AsyncMock()
+
+    async def fake_resolve(resolve_db, u, subscription_id):
+        return subscription
+
+    mock_cancel = AsyncMock()
+    monkeypatch.setattr(
+        'app.cabinet.routes.subscription_modules.helpers.resolve_subscription',
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        'app.services.payment.platega.cancel_platega_recurring_for_subscription_safe',
+        mock_cancel,
+    )
+
+    result = await route.update_autopay(
+        AutopayUpdateRequest(enabled=False),
+        user=_user(),
+        db=db,
+        subscription_id=None,
+    )
+
+    assert result['autopay_enabled'] is False
+    db.commit.assert_awaited()
+    # Disable path never triggers the reverse SBP-cancel hook.
+    mock_cancel.assert_not_awaited()

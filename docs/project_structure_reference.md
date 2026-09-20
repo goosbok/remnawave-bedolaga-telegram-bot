@@ -3728,6 +3728,9 @@
 - `tests/integration/__init__.py` — Python-модуль
   Классы: нет
   Функции: нет
+- `tests/integration/test_artemida_client_journey.py` — Python-модуль
+  Классы: нет
+  Функции: `test_limited_trial_holder_can_still_take_unlimited` — A user who already used the LIMITED trial can still activate the UNLIMITED, `test_unlimited_trial_holder_has_not_spent_the_limited_one` — The reverse gate: using the UNLIMITED trial must not consume the LIMITED
 - `tests/integration/test_artemida_full_chain.py` — Python-модуль
   Классы: нет
   Функции: `test_full_chain_provision_serve_swap`

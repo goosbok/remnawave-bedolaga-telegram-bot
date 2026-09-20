@@ -68,9 +68,14 @@ async def get_subscription(
             subscription.tariff = tariff
             tariff_name = tariff.name
 
-    # Fetch server names for connected squads
+    # Fetch server names for connected squads.
+    # External-vendor subs (e.g. Artemida) are provisioned off our Remnawave panel:
+    # their real locations live in the vendor's rebranded config, not our
+    # server_squads. Any connected_squads they carry are stale local UUIDs, so we
+    # neither resolve them to server-name chips nor expose them — the cabinet hides
+    # the "ЛОКАЦИИ" section when servers is empty.
     servers: list[ServerInfo] = []
-    connected_squads = subscription.connected_squads or []
+    connected_squads = [] if subscription.is_external_vendor else (subscription.connected_squads or [])
     if connected_squads:
         result = await db.execute(select(ServerSquad).where(ServerSquad.squad_uuid.in_(connected_squads)))
         server_squads = result.scalars().all()
@@ -115,6 +120,10 @@ async def get_subscription(
     subscription_data = _subscription_to_response(
         subscription, servers, tariff_name, traffic_purchases_data, user=fresh_user
     )
+    if subscription.is_external_vendor:
+        # Keep the response's own connected_squads empty too: those stale local UUIDs
+        # must not leak, and the frontend keys the locations section off servers/squads.
+        subscription_data.connected_squads = []
     return SubscriptionStatusResponse(has_subscription=True, subscription=subscription_data)
 
 

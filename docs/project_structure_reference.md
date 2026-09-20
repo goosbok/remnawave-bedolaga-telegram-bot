@@ -3281,6 +3281,9 @@
 - `tests/cabinet/test_unlimited_trial_endpoint.py` — Python-модуль
   Классы: нет
   Функции: `test_eligible_user_activates_unlimited_trial`, `test_flag_off_rejects_without_activating`, `test_unverified_user_rejects_without_activating`, `test_already_used_unlimited_trial_rejects_without_activating`, `test_trial_info_reports_unlimited_available`, `test_trial_info_reports_unlimited_unavailable_when_flag_off`, `test_trial_info_reports_unlimited_unavailable_when_already_used`
+- `tests/cabinet/test_vendor_location_management_guard.py` — Python-модуль
+  Классы: нет
+  Функции: `panel`, `test_get_countries_hides_local_squads_for_vendor_sub` — Artemida sub → no local squads leaked, location management flagged off., `test_get_countries_lists_squads_for_remnawave_sub` — Remnawave sub → squads still enumerated, location management flagged on., `test_post_countries_rejects_vendor_sub_without_charge` — Artemida sub → rejected before any balance/squad mutation., `test_post_countries_still_charges_remnawave_sub` — Remnawave sub → paid squad is added and charged, exactly as before., `test_status_hides_server_chips_for_vendor_sub` — Artemida sub with connected_squads set → no server chips, no squads leaked., `test_status_resolves_server_chips_for_remnawave_sub` — Remnawave sub with connected_squads → server names still resolved, unchanged.
 - `tests/cabinet/test_verification_resend.py` — Python-модуль
   Классы: нет
   Функции: `test_windows_come_from_settings`, `test_address_key_is_a_digest_and_ignores_case` — Ключ лимита оседает в Redis и в его логах — сам адрес туда попадать не должен., `test_one_inbox_is_protected_across_addresses` — Лимит по IP не спасает чужой ящик: окно по адресу отдаёт 429 само по себе., `test_zero_disables_the_address_window`, `test_pending_address_gets_a_fresh_link`, `test_unknown_address_answers_the_same_and_sends_nothing`, `test_verified_address_answers_the_same_and_keeps_its_token`, `test_throttle_stops_the_send`

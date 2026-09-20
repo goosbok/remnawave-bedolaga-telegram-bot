@@ -2845,6 +2845,9 @@
 - `scripts/seed_unlimited_trial_tariff.py` — Python-модуль
   Классы: нет
   Функции: `seed_unlimited_trial_tariff` — Идемпотентно создаёт безлимит-триальный (Artemida) тариф., `main`
+- `scripts/seed_vendor_tariffs.py` — Python-модуль
+  Классы: нет
+  Функции: `seed_vendor_tariffs` — Idempotently create the paid Artemida vendor tariffs., `main`
 
 ## tests
 
@@ -3788,6 +3791,9 @@
 - `tests/scripts/test_seed_unlimited_trial_tariff.py` — Python-модуль
   Классы: нет
   Функции: `test_apply_on_empty_db_creates_the_tariff`, `test_running_it_again_is_a_noop` — Idempotency: a second run must find the first tariff, not create a sibling., `test_resolver_finds_the_seeded_tariff` — The seeded tariff is is_active=False (hidden from the purchase list) but, `test_dry_run_does_not_persist_anything`, `test_dry_run_reports_an_existing_tariff_without_duplicating_it`
+- `tests/scripts/test_seed_vendor_tariffs.py` — Python-модуль
+  Классы: нет
+  Функции: `test_apply_on_empty_db_creates_both_tariffs`, `test_running_it_again_is_a_noop` — Idempotency: a second run must find the first rows, not create siblings., `test_dry_run_does_not_persist_anything`, `test_dry_run_reports_existing_without_duplicating`, `test_partial_seed_only_creates_the_missing_one` — If one tariff already exists, --apply creates only the other, no duplicate.
 
 ### tests/services
 

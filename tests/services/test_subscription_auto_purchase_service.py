@@ -283,6 +283,8 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
 
     service_mock = MagicMock()
     service_mock.update_remnawave_user = AsyncMock()
+    # remnawave path: renew_external returns False so the existing panel-sync runs.
+    service_mock.renew_external = AsyncMock(return_value=False)
     monkeypatch.setattr(
         'app.services.subscription_auto_purchase_service.SubscriptionService',
         lambda: service_mock,
@@ -401,6 +403,10 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
     bot.send_message.assert_awaited()
     service_mock.update_remnawave_user.assert_awaited()
     create_transaction_mock.assert_awaited()
+    # remnawave renewal: renew_external is consulted first with the renewal period and
+    # returns False, so the existing panel-sync path still runs (byte-for-byte unchanged).
+    service_mock.renew_external.assert_awaited_once()
+    assert service_mock.renew_external.await_args.kwargs['period_days'] == 30
 
 
 def _prepare_extend_race_guard_scenario(monkeypatch, *, recent_transactions: list):
@@ -465,6 +471,8 @@ def _prepare_extend_race_guard_scenario(monkeypatch, *, recent_transactions: lis
 
     service_mock = MagicMock()
     service_mock.update_remnawave_user = AsyncMock()
+    # remnawave path: renew_external returns False so the existing panel-sync runs.
+    service_mock.renew_external = AsyncMock(return_value=False)
     monkeypatch.setattr(
         'app.services.subscription_auto_purchase_service.SubscriptionService',
         lambda: service_mock,
@@ -593,6 +601,37 @@ async def test_race_guard_fresh_updated_at_with_subscription_payment_skips_purch
 
     assert result is False
     subtract_mock.assert_not_awaited()
+
+
+async def test_autopay_extend_artemida_renews_vendor_and_skips_panel_update(monkeypatch):
+    """Artemida renewal seam: after the balance is charged and the local end_date is
+    extended, the extension must route to renew_external (a PAID vendor renew of the
+    renewal period) and NOT fall through to update_remnawave_user (the free sync_usage
+    refresh that never extends the vendor key). Otherwise the paying client is billed
+    and the DB says 'extended' while the vendor key still expires at the old date."""
+    from app.services import subscription_auto_purchase_service as svc_mod
+
+    user, _subscription, subtract_mock = _prepare_extend_race_guard_scenario(
+        monkeypatch,
+        recent_transactions=[],
+    )
+    # The helper monkeypatched SubscriptionService to a shared mock — grab it and make
+    # renew_external report the external-vendor renew succeeded.
+    service_mock = svc_mod.SubscriptionService()
+    service_mock.renew_external = AsyncMock(return_value=True)
+
+    result = await auto_purchase_saved_cart_after_topup(
+        AsyncMock(spec=AsyncSession),
+        user,
+        bot=AsyncMock(),
+    )
+
+    assert result is True
+    subtract_mock.assert_awaited()
+    service_mock.renew_external.assert_awaited_once()
+    assert service_mock.renew_external.await_args.kwargs['period_days'] == 90
+    # PAID vendor renew handled it — the generic panel push must NOT run.
+    service_mock.update_remnawave_user.assert_not_awaited()
 
 
 async def test_auto_purchase_trial_preserved_on_insufficient_balance(monkeypatch):
@@ -775,6 +814,8 @@ async def test_auto_purchase_trial_converted_after_successful_extension(monkeypa
 
     service_mock = MagicMock()
     service_mock.update_remnawave_user = AsyncMock()
+    # remnawave path: renew_external returns False so the existing panel-sync runs.
+    service_mock.renew_external = AsyncMock(return_value=False)
     monkeypatch.setattr(
         'app.services.subscription_auto_purchase_service.SubscriptionService',
         lambda: service_mock,
@@ -1077,6 +1118,8 @@ async def test_auto_purchase_trial_remaining_days_transferred(monkeypatch):
 
     service_mock = MagicMock()
     service_mock.update_remnawave_user = AsyncMock()
+    # remnawave path: renew_external returns False so the existing panel-sync runs.
+    service_mock.renew_external = AsyncMock(return_value=False)
     monkeypatch.setattr(
         'app.services.subscription_auto_purchase_service.SubscriptionService',
         lambda: service_mock,

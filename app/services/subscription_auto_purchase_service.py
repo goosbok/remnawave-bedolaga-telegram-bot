@@ -690,13 +690,20 @@ async def _auto_extend_subscription(
     else:
         should_reset_traffic = settings.RESET_TRAFFIC_ON_PAYMENT
     try:
-        await subscription_service.update_remnawave_user(
-            db,
-            updated_subscription,
-            reset_traffic=should_reset_traffic,
-            reset_reason='смена тарифа' if is_tariff_change else 'продление подписки',
-            sync_squads=True,
-        )
+        # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ вызовом у вендора с
+        # идемпотентным ключом на пост-extend end_date; renew_external возвращает False
+        # только для remnawave — тогда штатный пуш состояния в панель ниже отрабатывает
+        # как раньше (для remnawave поведение не меняется).
+        if not await subscription_service.renew_external(
+            db, updated_subscription, period_days=prepared.period_days
+        ):
+            await subscription_service.update_remnawave_user(
+                db,
+                updated_subscription,
+                reset_traffic=should_reset_traffic,
+                reset_reason='смена тарифа' if is_tariff_change else 'продление подписки',
+                sync_squads=True,
+            )
     except Exception as error:  # pragma: no cover - defensive logging
         logger.error(
             '⚠️ Автопокупка: не удалось обновить RemnaWave пользователя после продления',

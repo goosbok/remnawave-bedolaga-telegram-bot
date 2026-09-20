@@ -45,6 +45,72 @@ async def test_create_dispatches_to_artemida_provision(monkeypatch):
     assert bool(result) is True
 
 
+# ---------------------------------------------------------------------------
+# renew_external: the paid-renewal seam. A vendor-provisioned subscription that
+# is being RENEWED must push a real PAID renew to the vendor (provider.update
+# with days), NOT the free sync_usage/provision path — otherwise the local DB
+# and the client's balance say "extended" while the vendor key still expires at
+# the original date and the paying client loses access.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_renew_external_dispatches_paid_renew_for_artemida(monkeypatch):
+    provider = SimpleNamespace(
+        name='artemida', update=AsyncMock(), provision=AsyncMock(), sync_usage=AsyncMock()
+    )
+    service = SubscriptionService()
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
+    db = AsyncMock()
+    sub = SimpleNamespace(
+        id=42,
+        user_id=1,
+        external_ref='key_1',
+        external_provider='artemida',
+        end_date=datetime.now(UTC) + timedelta(days=90),
+    )
+
+    result = await service.renew_external(db, sub, period_days=90)
+
+    assert result is True
+    # A PAID renew of exactly the renewal period — not provision (stable key,
+    # no extension) and not sync_usage (free refresh, no extension).
+    provider.update.assert_awaited_once_with(db=db, subscription=sub, days=90)
+    provider.provision.assert_not_awaited()
+    provider.sync_usage.assert_not_awaited()
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_renew_external_returns_false_for_remnawave(monkeypatch):
+    service = SubscriptionService()
+    # remnawave / unprovisioned -> resolver returns None -> caller keeps its behavior.
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=None))
+    db = AsyncMock()
+    sub = SimpleNamespace(id=1, user_id=1)
+
+    result = await service.renew_external(db, sub, period_days=90)
+
+    assert result is False
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_renew_external_guards_nonpositive_period(monkeypatch):
+    """period_days None/0/negative = nothing to renew: return False, never touch the vendor."""
+    provider = SimpleNamespace(name='artemida', update=AsyncMock())
+    service = SubscriptionService()
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
+    db = AsyncMock()
+    sub = SimpleNamespace(id=42, user_id=1, external_ref='key_1', external_provider='artemida')
+
+    for bad in (0, -5, None):
+        assert await service.renew_external(db, sub, period_days=bad) is False
+
+    provider.update.assert_not_awaited()
+    db.commit.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_update_dispatches_to_sync_usage_not_renew(monkeypatch):
     provider = SimpleNamespace(name='artemida', provision=AsyncMock(), sync_usage=AsyncMock(), update=AsyncMock())

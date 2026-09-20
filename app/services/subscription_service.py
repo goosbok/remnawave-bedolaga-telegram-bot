@@ -691,6 +691,34 @@ class SubscriptionService:
             reset_reason=reset_reason,
         )
 
+    async def renew_external(self, db: AsyncSession, subscription: Subscription, *, period_days: int) -> bool:
+        """Push a PAID renewal of an externally-provisioned subscription to its vendor.
+
+        Returns True when the subscription is served by an external provider and the
+        vendor renew was issued (and committed); False for a remnawave / unprovisioned
+        subscription, in which case the caller keeps its existing panel-sync behavior.
+
+        This closes the paid-renewal gap: after the caller charges the balance and
+        `extend_subscription(...)` moves `subscription.end_date` out in the local DB,
+        the generic `create/update_remnawave_user` seams route an external sub to
+        `provision` (stable idempotency key -> cached original key) or `sync_usage`
+        (free refresh) — neither extends the vendor key, so the paying client loses
+        access. `provider.update(days=...)` is the only seam that issues a real paid
+        renew. Retry-stability is the provider's concern: its idempotency key is keyed
+        on the post-extend `end_date`, so re-running this is safe.
+        """
+        # Nothing to renew — keep the caller's existing behavior, never touch the vendor.
+        if period_days is None or period_days <= 0:
+            return False
+
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is None:
+            return False
+
+        await provider.update(db=db, subscription=subscription, days=period_days)
+        await db.commit()
+        return True
+
     async def update_remnawave_user(
         self,
         db: AsyncSession,

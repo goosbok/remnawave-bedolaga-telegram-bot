@@ -2646,6 +2646,14 @@ class Subscription(Base):
         return end is not None and end <= datetime.now(UTC)
 
     @property
+    def is_external_vendor(self) -> bool:
+        """True when this subscription is provisioned on an external paid vendor
+        (e.g. Artemida) rather than our own Remnawave panel — i.e. extending or
+        revoking it costs money at, or must be pushed to, that vendor."""
+        provider = self.external_provider
+        return bool(provider) and provider != 'remnawave'
+
+    @property
     def should_be_expired(self) -> bool:
         current_time = datetime.now(UTC)
         end = _aware(self.end_date)

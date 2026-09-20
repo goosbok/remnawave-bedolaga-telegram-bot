@@ -32,6 +32,11 @@ TABLES = list(Base.metadata.sorted_tables)
 
 
 class _FakePanelSync:
+    async def renew_external(self, db, subscription, *, period_days):
+        # This fake stands in for a remnawave (own-panel) sub, so it never routes to
+        # an external vendor — return False and let the panel-sync path run.
+        return False
+
     async def update_remnawave_user(self, db, subscription, **kwargs):
         return SimpleNamespace(id=9001, used_traffic_bytes=0)
 

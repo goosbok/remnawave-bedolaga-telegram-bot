@@ -359,6 +359,82 @@ async def with_admin_notification_service(
 class SubscriptionRenewalService:
     """Shared helpers for subscription renewal pricing and processing."""
 
+    async def _compensate_committed_renewal(
+        self,
+        db: AsyncSession,
+        user: User,
+        subscription: Subscription,
+        *,
+        old_end_date: datetime | None,
+        old_status: str,
+        was_expired: bool,
+        charge_from_balance: int,
+        consume_promo_offer: bool,
+        saved_promo_percent: int,
+        saved_promo_source: str | None,
+        saved_promo_expires: datetime | None,
+    ) -> None:
+        """Undo an already-committed renewal after the PAID external-vendor renew failed.
+
+        ``extend_subscription`` has committed the new ``end_date`` (and possibly an
+        expired->active status flip) and ``subtract_user_balance`` has committed the
+        charge, but the vendor never applied the renewal — so leave nothing half-done:
+        revert the local extension, refund the balance, restore the consumed promo
+        offer. Best-effort and loudly logged: a failure here must not mask the original
+        vendor error the caller re-raises.
+        """
+        from app.database.crud.user import add_user_balance
+
+        # Revert the committed local extension (a plain rollback cannot undo a commit).
+        try:
+            subscription.end_date = old_end_date
+            if was_expired:
+                subscription.status = old_status
+            await db.commit()
+        except Exception as revert_error:
+            logger.critical(
+                'CRITICAL: failed to revert local extension after vendor renewal failure',
+                subscription_id=subscription.id,
+                user_id=user.id,
+                revert_error=revert_error,
+            )
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+        # Refund the charge + restore the consumed promo offer (mirrors the
+        # extend-failure compensation path above).
+        if charge_from_balance > 0 or (consume_promo_offer and saved_promo_percent > 0):
+            try:
+                if charge_from_balance > 0:
+                    refunded = await add_user_balance(
+                        db,
+                        user,
+                        charge_from_balance,
+                        'Возврат: продление не подтверждено вендором',
+                        create_transaction=True,
+                        transaction_type=TransactionType.REFUND,
+                    )
+                    if not refunded:
+                        logger.critical(
+                            'CRITICAL: add_user_balance returned False during vendor-renewal refund',
+                            charge_from_balance=charge_from_balance,
+                            user_id=user.id,
+                        )
+                if consume_promo_offer and saved_promo_percent > 0:
+                    user.promo_offer_discount_percent = saved_promo_percent
+                    user.promo_offer_discount_source = saved_promo_source
+                    user.promo_offer_discount_expires_at = saved_promo_expires
+                    await db.commit()
+            except Exception as refund_error:
+                logger.critical(
+                    'CRITICAL: failed to refund after vendor-renewal failure',
+                    charge_from_balance=charge_from_balance,
+                    user_id=user.id,
+                    refund_error=refund_error,
+                )
+
     async def finalize(
         self,
         db: AsyncSession,
@@ -418,6 +494,10 @@ class SubscriptionRenewalService:
         )
         subscription_before = locked_result.scalar_one()
         old_end_date = subscription_before.end_date
+        # Capture the pre-renewal status too: extend_subscription commits a change from
+        # expired/disabled/limited -> active, so compensating a failed external renew must
+        # be able to write it back (a plain rollback cannot undo a committed change).
+        old_status = subscription_before.status
 
         # Determine expired state BEFORE extend_subscription mutates the object
         now = datetime.now(UTC)
@@ -498,20 +578,55 @@ class SubscriptionRenewalService:
         reset_traffic = was_expired and settings.RESET_TRAFFIC_ON_PAYMENT
         reset_devices = settings.RESET_DEVICES_ON_RENEWAL
         subscription_service = SubscriptionService()
-        try:
-            await db.refresh(user)
 
+        # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ вызовом у вендора
+        # (провижн-ключ идемпотентен по пост-extend end_date). Это ДЕНЬГИ, а не
+        # best-effort синк панели: renew_external делает provider.update + commit и
+        # возвращает True (внешний вендор продлён) либо False (remnawave/
+        # непровижиненная — ниже отрабатывает прежний путь панели без изменений).
+        #
+        # Сбой платного продления НЕЛЬЗЯ отправлять в remnawave_retry_queue: для
+        # внешней подписки очередь роутит на provision (стабильный idempotency-ключ →
+        # вендор отдаёт закэшированный СТАРЫЙ ключ → продления НЕТ), т.е. само не
+        # вылечится, а клиент уже списан и локально «продлён». Поэтому такой сбой
+        # КОМПЕНСИРУЕМ полностью (откат продления + возврат средств) и пробрасываем.
+        # Вызов держим под asyncio.timeout, чтобы зависший вендор не держал запрос.
+        try:
             async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
-                # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ вызовом у вендора
-                # (идемпотентный ключ на пост-extend end_date). Для remnawave renew_external
-                # возвращает False — тогда отрабатывает прежняя логика create/update панели
-                # без изменений. Вызов держим ВНУТРИ того же asyncio.timeout и того же
-                # try/except, чтобы сбой вендора уходил в remnawave_retry_queue так же, как
-                # сегодня уходит сбой синка панели.
                 renewed_external = await subscription_service.renew_external(
                     db, subscription_after, period_days=period_days
                 )
-                if not renewed_external:
+        except Exception as error:
+            await self._compensate_committed_renewal(
+                db,
+                user,
+                subscription_after,
+                old_end_date=old_end_date,
+                old_status=old_status,
+                was_expired=was_expired,
+                charge_from_balance=charge_from_balance,
+                consume_promo_offer=consume_promo_offer,
+                saved_promo_percent=saved_promo_percent,
+                saved_promo_source=saved_promo_source,
+                saved_promo_expires=saved_promo_expires,
+            )
+            logger.error(
+                'External vendor renewal failed; renewal fully compensated',
+                subscription_after_id=subscription_after.id,
+                user_id=user.id,
+                error=error,
+            )
+            raise SubscriptionRenewalChargeError(
+                'External vendor renewal failed; renewal was fully compensated'
+            ) from error
+
+        if not renewed_external:
+            # remnawave / непровижиненная подписка — прежний best-effort синк панели с
+            # уходом в remnawave_retry_queue при сбое. Поведение НЕ меняем.
+            try:
+                await db.refresh(user)
+
+                async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
                     if settings.is_multi_tariff_enabled():
                         _should_create = subscription_after.remnawave_id is None
                     else:
@@ -531,21 +646,21 @@ class SubscriptionRenewalService:
                             reset_traffic=reset_traffic,
                             reset_reason='subscription renewal',
                         )
-        except RemnaWaveConfigurationError as error:  # pragma: no cover - configuration issues
-            logger.warning('RemnaWave update skipped', error=error)
-        except Exception as error:  # pragma: no cover - defensive logging
-            logger.error(
-                'Failed to sync RemnaWave user for subscription',
-                subscription_after_id=subscription_after.id,
-                error=error,
-            )
-            from app.services.remnawave_retry_queue import remnawave_retry_queue
+            except RemnaWaveConfigurationError as error:  # pragma: no cover - configuration issues
+                logger.warning('RemnaWave update skipped', error=error)
+            except Exception as error:  # pragma: no cover - defensive logging
+                logger.error(
+                    'Failed to sync RemnaWave user for subscription',
+                    subscription_after_id=subscription_after.id,
+                    error=error,
+                )
+                from app.services.remnawave_retry_queue import remnawave_retry_queue
 
-            remnawave_retry_queue.enqueue(
-                subscription_id=subscription_after.id,
-                user_id=subscription_after.user_id,
-                action='create' if getattr(subscription_after, 'remnawave_id', None) is None else 'update',
-            )
+                remnawave_retry_queue.enqueue(
+                    subscription_id=subscription_after.id,
+                    user_id=subscription_after.user_id,
+                    action='create' if getattr(subscription_after, 'remnawave_id', None) is None else 'update',
+                )
 
         # Сброс привязанных устройств при продлении (если включено)
         if reset_devices:

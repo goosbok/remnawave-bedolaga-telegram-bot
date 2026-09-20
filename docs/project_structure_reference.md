@@ -1695,7 +1695,7 @@
   Классы: `RebrandedDocument`
   Функции: `rebrand_links`
 - `app/services/subscription_renewal_service.py` — Python-модуль
-  Классы: `SubscriptionRenewalError`, `SubscriptionRenewalChargeError`, `SubscriptionRenewalPricing` (2 методов), `SubscriptionRenewalResult`, `RenewalPaymentDescriptor` (1 методов), `SubscriptionRenewalService` (1 методов)
+  Классы: `SubscriptionRenewalError`, `SubscriptionRenewalChargeError`, `SubscriptionRenewalPricing` (2 методов), `SubscriptionRenewalResult`, `RenewalPaymentDescriptor` (1 методов), `SubscriptionRenewalService` (2 методов)
   Функции: `build_renewal_period_id`, `build_payment_descriptor`, `encode_payment_payload`, `decode_payment_payload`, `build_payment_metadata`, `parse_payment_metadata`, `with_admin_notification_service`, `calculate_missing_amount`
 - `app/services/subscription_service.py` — Python-модуль
   Классы: `PropagateSquadsResult`, `SubscriptionService` (35 методов)
@@ -4290,7 +4290,7 @@
   Функции: `test_rewrites_remark_and_omits_routing`, `test_empty_links_produce_empty_body`
 - `tests/services/test_subscription_renewal_finalize_external.py` — Python-модуль
   Классы: нет
-  Функции: `test_finalize_artemida_renews_vendor_not_panel`, `test_finalize_remnawave_uses_panel_update`
+  Функции: `test_finalize_artemida_renews_vendor_not_panel`, `test_finalize_remnawave_uses_panel_update`, `test_finalize_external_vendor_failure_compensates_and_raises` — A PAID external renew that fails at the vendor must be atomic: revert the, `test_finalize_external_vendor_success_keeps_charge_and_extension` — Regression: when renew_external succeeds (True), the renewal stands — no, `test_finalize_remnawave_panel_failure_defers_to_retry_queue` — Regression: the remnawave path is byte-for-byte unchanged. renew_external
 - `tests/services/test_subscription_service_sync.py` — Python-модуль
   Классы: нет
   Функции: `test_sync_picks_create_or_update_by_panel_id`, `test_missing_user_falls_to_create_which_reports_it` — Пользователя нет в базе: не падаем, create сам залогирует и вернёт None.

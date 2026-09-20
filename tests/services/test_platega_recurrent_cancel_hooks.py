@@ -346,6 +346,8 @@ async def test_cancel_safe_wiring_proof_multi_tariff_delete_subscription(monkeyp
         remnawave_id=None,
         tariff_id=None,
         user_id=1,
+        # remnawave-подписка: вендорного revoke в потоке удаления не будет.
+        is_external_vendor=False,
     )
     user = SimpleNamespace(id=1)
 
@@ -415,6 +417,8 @@ async def test_cancel_safe_wiring_proof_my_subscriptions_delete_execute(monkeypa
         status=SubscriptionStatus.EXPIRED.value,
         actual_status=SubscriptionStatus.EXPIRED.value,
         remnawave_id=None,
+        # remnawave-подписка: вендорного revoke в потоке удаления не будет.
+        is_external_vendor=False,
     )
 
     async def fake_get_subscription(db, sub_id, user_id):

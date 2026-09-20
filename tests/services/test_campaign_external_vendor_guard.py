@@ -77,9 +77,7 @@ def patched_crud(monkeypatch):
     extend = AsyncMock()
     record = AsyncMock(return_value=(object(), True))
     monkeypatch.setattr('app.database.crud.subscription.extend_subscription', extend)
-    monkeypatch.setattr(
-        'app.database.crud.server_squad.get_effective_tariff_squad_uuids', AsyncMock(return_value=[])
-    )
+    monkeypatch.setattr('app.database.crud.server_squad.get_effective_tariff_squad_uuids', AsyncMock(return_value=[]))
     monkeypatch.setattr('app.services.campaign_service.record_campaign_registration', record)
     tariff = SimpleNamespace(
         id=PANEL_TARIFF_ID, name='Максимум', is_active=True, traffic_limit_gb=100, device_limit=3, allowed_squads=[]

@@ -6,7 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import TransactionType, User
-from app.services.subscription_auto_purchase_service import auto_purchase_saved_cart_after_topup
+from app.services.subscription_auto_purchase_service import (
+    AutoExtendContext,
+    _auto_extend_subscription,
+    auto_purchase_saved_cart_after_topup,
+)
 from app.services.subscription_purchase_service import (
     PurchaseDevicesConfig,
     PurchaseOptionsContext,
@@ -228,6 +232,7 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
 
     subscription = MagicMock()
     subscription.id = 99
+    subscription.is_external_vendor = False  # remnawave (own-panel) sub — autopay path unchanged
     subscription.is_trial = False
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC)
@@ -409,6 +414,60 @@ async def test_auto_purchase_saved_cart_after_topup_extension(monkeypatch):
     assert service_mock.renew_external.await_args.kwargs['period_days'] == 30
 
 
+async def test_auto_extend_skips_external_vendor_subscription(monkeypatch):
+    """Go-live guard: ``_auto_extend_subscription`` must NOT autopay an external-vendor
+    (Artemida) subscription. Autopay is disabled for these subs until the paid vendor
+    renewal is verified live in production — a background run would charge the balance and
+    then renew the vendor key, but this path does not compensate (refund+revert) on a
+    vendor error. So for a vendor sub the function returns False (like its other early-
+    outs) without charging the balance, extending the sub, or calling the vendor."""
+    subscription = MagicMock()
+    subscription.id = 555
+    subscription.is_external_vendor = True  # Artemida (external paid vendor)
+
+    prepared = AutoExtendContext(
+        subscription=subscription,
+        period_days=30,
+        price_kopeks=31_000,
+        description='Продление подписки',
+    )
+    monkeypatch.setattr(
+        'app.services.subscription_auto_purchase_service._prepare_auto_extend_context',
+        AsyncMock(return_value=prepared),
+    )
+
+    subtract_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        'app.services.subscription_auto_purchase_service.subtract_user_balance',
+        subtract_mock,
+    )
+    extend_mock = AsyncMock()
+    monkeypatch.setattr(
+        'app.services.subscription_auto_purchase_service.extend_subscription',
+        extend_mock,
+    )
+    service_mock = MagicMock()
+    service_mock.renew_external = AsyncMock(return_value=False)
+    service_mock.update_remnawave_user = AsyncMock()
+    monkeypatch.setattr(
+        'app.services.subscription_auto_purchase_service.SubscriptionService',
+        lambda: service_mock,
+    )
+
+    user = MagicMock(spec=User)
+    user.id = 7
+    user.telegram_id = 7007
+    user.balance_kopeks = 10_000_000
+
+    result = await _auto_extend_subscription(AsyncMock(spec=AsyncSession), user, {'cart_mode': 'extend'})
+
+    assert result is False
+    subtract_mock.assert_not_awaited()
+    extend_mock.assert_not_awaited()
+    service_mock.renew_external.assert_not_awaited()
+    service_mock.update_remnawave_user.assert_not_awaited()
+
+
 def _prepare_extend_race_guard_scenario(monkeypatch, *, recent_transactions: list):
     """Общий сетап продления с свежим updated_at для тестов race-guard."""
     monkeypatch.setattr(settings, 'AUTO_PURCHASE_AFTER_TOPUP_ENABLED', True)
@@ -416,6 +475,7 @@ def _prepare_extend_race_guard_scenario(monkeypatch, *, recent_transactions: lis
 
     subscription = MagicMock()
     subscription.id = 82
+    subscription.is_external_vendor = False  # remnawave (own-panel) sub — autopay path unchanged
     subscription.is_trial = False
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=5)
@@ -603,22 +663,25 @@ async def test_race_guard_fresh_updated_at_with_subscription_payment_skips_purch
     subtract_mock.assert_not_awaited()
 
 
-async def test_autopay_extend_artemida_renews_vendor_and_skips_panel_update(monkeypatch):
-    """Artemida renewal seam: after the balance is charged and the local end_date is
-    extended, the extension must route to renew_external (a PAID vendor renew of the
-    renewal period) and NOT fall through to update_remnawave_user (the free sync_usage
-    refresh that never extends the vendor key). Otherwise the paying client is billed
-    and the DB says 'extended' while the vendor key still expires at the old date."""
+async def test_auto_extend_skips_artemida_vendor_via_saved_cart(monkeypatch):
+    """Go-live guard, full saved-cart flow: an external-vendor (Artemida) subscription
+    must be skipped by auto-extend. Autopay is disabled for these subs until the paid
+    vendor renewal is verified live in production, so the flow must NOT charge the
+    balance and must NOT touch the vendor (``renew_external``) — it returns False, like
+    the other early-outs.
+
+    (Previously this asserted the opposite — that auto-extend renewed the vendor key —
+    but that background renewal is exactly what the go-live guard disables: the path does
+    not compensate with a refund+revert if the vendor errors mid-run.)"""
     from app.services import subscription_auto_purchase_service as svc_mod
 
-    user, _subscription, subtract_mock = _prepare_extend_race_guard_scenario(
+    user, subscription, subtract_mock = _prepare_extend_race_guard_scenario(
         monkeypatch,
         recent_transactions=[],
     )
-    # The helper monkeypatched SubscriptionService to a shared mock — grab it and make
-    # renew_external report the external-vendor renew succeeded.
+    subscription.is_external_vendor = True  # Artemida (external paid vendor)
+    # The helper monkeypatched SubscriptionService to a shared mock.
     service_mock = svc_mod.SubscriptionService()
-    service_mock.renew_external = AsyncMock(return_value=True)
 
     result = await auto_purchase_saved_cart_after_topup(
         AsyncMock(spec=AsyncSession),
@@ -626,11 +689,9 @@ async def test_autopay_extend_artemida_renews_vendor_and_skips_panel_update(monk
         bot=AsyncMock(),
     )
 
-    assert result is True
-    subtract_mock.assert_awaited()
-    service_mock.renew_external.assert_awaited_once()
-    assert service_mock.renew_external.await_args.kwargs['period_days'] == 90
-    # PAID vendor renew handled it — the generic panel push must NOT run.
+    assert result is False
+    subtract_mock.assert_not_awaited()
+    service_mock.renew_external.assert_not_awaited()
     service_mock.update_remnawave_user.assert_not_awaited()
 
 
@@ -642,6 +703,7 @@ async def test_auto_purchase_trial_preserved_on_insufficient_balance(monkeypatch
 
     subscription = MagicMock()
     subscription.id = 123
+    subscription.is_external_vendor = False  # remnawave (own-panel) sub — autopay path unchanged
     subscription.is_trial = True  # Триальная подписка!
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=2)  # Осталось 2 дня
@@ -757,6 +819,7 @@ async def test_auto_purchase_trial_converted_after_successful_extension(monkeypa
 
     subscription = MagicMock()
     subscription.id = 456
+    subscription.is_external_vendor = False  # remnawave (own-panel) sub — autopay path unchanged
     subscription.is_trial = True  # Триальная подписка!
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=1)
@@ -905,6 +968,7 @@ async def test_auto_purchase_trial_preserved_on_extension_failure(monkeypatch):
 
     subscription = MagicMock()
     subscription.id = 789
+    subscription.is_external_vendor = False  # remnawave (own-panel) sub — autopay path unchanged
     subscription.is_trial = True  # Триальная подписка!
     subscription.status = 'active'
     subscription.end_date = datetime.now(UTC) + timedelta(days=3)
@@ -1041,6 +1105,7 @@ async def test_auto_purchase_trial_remaining_days_transferred(monkeypatch):
 
     subscription = MagicMock()
     subscription.id = 321
+    subscription.is_external_vendor = False  # remnawave (own-panel) sub — autopay path unchanged
     subscription.is_trial = True
     subscription.status = 'active'
     subscription.end_date = trial_end

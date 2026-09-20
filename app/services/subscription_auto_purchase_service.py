@@ -694,9 +694,7 @@ async def _auto_extend_subscription(
         # идемпотентным ключом на пост-extend end_date; renew_external возвращает False
         # только для remnawave — тогда штатный пуш состояния в панель ниже отрабатывает
         # как раньше (для remnawave поведение не меняется).
-        if not await subscription_service.renew_external(
-            db, updated_subscription, period_days=prepared.period_days
-        ):
+        if not await subscription_service.renew_external(db, updated_subscription, period_days=prepared.period_days):
             await subscription_service.update_remnawave_user(
                 db,
                 updated_subscription,

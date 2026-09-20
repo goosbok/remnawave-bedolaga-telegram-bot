@@ -56,9 +56,7 @@ async def test_create_dispatches_to_artemida_provision(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_renew_external_dispatches_paid_renew_for_artemida(monkeypatch):
-    provider = SimpleNamespace(
-        name='artemida', update=AsyncMock(), provision=AsyncMock(), sync_usage=AsyncMock()
-    )
+    provider = SimpleNamespace(name='artemida', update=AsyncMock(), provision=AsyncMock(), sync_usage=AsyncMock())
     service = SubscriptionService()
     monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
     db = AsyncMock()

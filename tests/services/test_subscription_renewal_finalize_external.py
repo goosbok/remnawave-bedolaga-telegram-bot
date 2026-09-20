@@ -62,9 +62,7 @@ def _patch_common(monkeypatch, service_mock, subscription_after) -> None:
 @pytest.mark.asyncio
 async def test_finalize_artemida_renews_vendor_not_panel(monkeypatch):
     now = datetime.now(UTC)
-    subscription_before = SimpleNamespace(
-        id=42, status='active', end_date=now + timedelta(days=5), remnawave_id=None
-    )
+    subscription_before = SimpleNamespace(id=42, status='active', end_date=now + timedelta(days=5), remnawave_id=None)
     subscription_after = SimpleNamespace(id=42, end_date=now + timedelta(days=95), remnawave_id=None)
 
     service_mock = MagicMock()
@@ -87,9 +85,7 @@ async def test_finalize_artemida_renews_vendor_not_panel(monkeypatch):
 @pytest.mark.asyncio
 async def test_finalize_remnawave_uses_panel_update(monkeypatch):
     now = datetime.now(UTC)
-    subscription_before = SimpleNamespace(
-        id=7, status='active', end_date=now + timedelta(days=5), remnawave_id=5
-    )
+    subscription_before = SimpleNamespace(id=7, status='active', end_date=now + timedelta(days=5), remnawave_id=5)
     subscription_after = SimpleNamespace(id=7, end_date=now + timedelta(days=95), remnawave_id=5)
 
     service_mock = MagicMock()

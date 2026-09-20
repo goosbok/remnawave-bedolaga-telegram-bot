@@ -500,26 +500,37 @@ class SubscriptionRenewalService:
         subscription_service = SubscriptionService()
         try:
             await db.refresh(user)
-            if settings.is_multi_tariff_enabled():
-                _should_create = subscription_after.remnawave_id is None
-            else:
-                _should_create = getattr(user, 'remnawave_id', None) is None
 
             async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
-                if _should_create:
-                    await subscription_service.create_remnawave_user(
-                        db,
-                        subscription_after,
-                        reset_traffic=reset_traffic,
-                        reset_reason='subscription renewal',
-                    )
-                else:
-                    await subscription_service.update_remnawave_user(
-                        db,
-                        subscription_after,
-                        reset_traffic=reset_traffic,
-                        reset_reason='subscription renewal',
-                    )
+                # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ вызовом у вендора
+                # (идемпотентный ключ на пост-extend end_date). Для remnawave renew_external
+                # возвращает False — тогда отрабатывает прежняя логика create/update панели
+                # без изменений. Вызов держим ВНУТРИ того же asyncio.timeout и того же
+                # try/except, чтобы сбой вендора уходил в remnawave_retry_queue так же, как
+                # сегодня уходит сбой синка панели.
+                renewed_external = await subscription_service.renew_external(
+                    db, subscription_after, period_days=period_days
+                )
+                if not renewed_external:
+                    if settings.is_multi_tariff_enabled():
+                        _should_create = subscription_after.remnawave_id is None
+                    else:
+                        _should_create = getattr(user, 'remnawave_id', None) is None
+
+                    if _should_create:
+                        await subscription_service.create_remnawave_user(
+                            db,
+                            subscription_after,
+                            reset_traffic=reset_traffic,
+                            reset_reason='subscription renewal',
+                        )
+                    else:
+                        await subscription_service.update_remnawave_user(
+                            db,
+                            subscription_after,
+                            reset_traffic=reset_traffic,
+                            reset_reason='subscription renewal',
+                        )
         except RemnaWaveConfigurationError as error:  # pragma: no cover - configuration issues
             logger.warning('RemnaWave update skipped', error=error)
         except Exception as error:  # pragma: no cover - defensive logging

@@ -1678,12 +1678,19 @@ class MonitoringService:
                             # Синк панели — лучшее-усилие: продление уже в БД, при сбое не возвращаем,
                             # а полагаемся на очередь повтора синка.
                             try:
-                                await self.subscription_service.update_remnawave_user(
-                                    db,
-                                    subscription,
-                                    reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
-                                    reset_reason='автопродление подписки',
-                                )
+                                # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ
+                                # вызовом у вендора (идемпотентный ключ на пост-extend
+                                # end_date). Для remnawave renew_external возвращает False —
+                                # тогда отрабатывает прежний синк панели без изменений.
+                                if not await self.subscription_service.renew_external(
+                                    db, subscription, period_days=autopay_period
+                                ):
+                                    await self.subscription_service.update_remnawave_user(
+                                        db,
+                                        subscription,
+                                        reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                                        reset_reason='автопродление подписки',
+                                    )
                             except Exception as sync_exc:
                                 logger.error(
                                     'Автопродление: ошибка синка RemnaWave (продление уже применено в БД)',

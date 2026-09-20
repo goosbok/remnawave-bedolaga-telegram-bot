@@ -719,6 +719,28 @@ class SubscriptionService:
         await db.commit()
         return True
 
+    async def revoke_external(self, db: AsyncSession, subscription: Subscription) -> bool:
+        """Release the vendor key of an externally-provisioned subscription on cancellation.
+
+        Returns True when the subscription is served by an external provider and the
+        vendor key was released (``provider.revoke``); False for a remnawave /
+        unprovisioned subscription, in which case the caller keeps its existing panel
+        behavior.
+
+        On genuine deletion the vendor key must be released or the owner keeps paying
+        for an orphaned key. Unlike ``renew_external`` this does NOT commit: deletion
+        flows own their transaction (see ``subscription_deletion_service``), and a
+        revoke touches no local row. ``provider.revoke`` is idempotent and best-effort
+        by design — a vendor TRIAL key answers the vendor DELETE with 404 (trials can't
+        be revoked), so the deletion seam calls this as a log-and-continue step.
+        """
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is None:
+            return False
+
+        await provider.revoke(db=db, subscription=subscription)
+        return True
+
     async def update_remnawave_user(
         self,
         db: AsyncSession,

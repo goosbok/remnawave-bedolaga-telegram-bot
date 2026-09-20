@@ -109,6 +109,47 @@ async def test_renew_external_guards_nonpositive_period(monkeypatch):
     db.commit.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# revoke_external: genuine-cancellation seam. When a subscription is really
+# deleted/cancelled, the vendor key must be RELEASED (revoke), or the owner
+# keeps paying for an orphan key. Mirrors renew_external: external provider ->
+# revoke + True; remnawave / unprovisioned -> False so the caller keeps its
+# existing panel behavior. It does NOT commit — the deletion flow owns the
+# transaction.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_revoke_external_dispatches_to_provider_for_artemida(monkeypatch):
+    provider = SimpleNamespace(name='artemida', revoke=AsyncMock())
+    service = SubscriptionService()
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
+    db = AsyncMock()
+    sub = SimpleNamespace(id=42, user_id=1, external_ref='key_1', external_provider='artemida')
+
+    result = await service.revoke_external(db, sub)
+
+    assert result is True
+    provider.revoke.assert_awaited_once_with(db=db, subscription=sub)
+    # The deletion flow owns the transaction (it commits once at the end); a
+    # revoke touches no local row, so this seam must not commit on its own.
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_revoke_external_returns_false_for_remnawave(monkeypatch):
+    service = SubscriptionService()
+    # remnawave / unprovisioned -> resolver returns None -> caller keeps its behavior.
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=None))
+    db = AsyncMock()
+    sub = SimpleNamespace(id=1, user_id=1, external_provider=None)
+
+    result = await service.revoke_external(db, sub)
+
+    assert result is False
+    db.commit.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_update_dispatches_to_sync_usage_not_renew(monkeypatch):
     provider = SimpleNamespace(name='artemida', provision=AsyncMock(), sync_usage=AsyncMock(), update=AsyncMock())

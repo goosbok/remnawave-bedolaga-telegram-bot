@@ -28,6 +28,7 @@ from app.database.models import (
 from app.services.provider_swap_service import move_subscription_to_provider
 from app.services.providers import register_provider
 from app.services.providers.artemida import ArtemidaProvider
+from app.services.subscription_service import SubscriptionService
 from app.webapi.routes import artemida_sub
 from tests.fixtures.sqlite_memory import ensure_real_aiosqlite  # registers JSONB→JSON + real aiosqlite
 
@@ -40,6 +41,10 @@ _VENDOR2_LINKS = ['vless://22222222-2222-4222-8222-222222222222@fr.vendor2:443?t
 
 
 class _FakeArtemidaClient:
+    # Class-level so renew calls are visible across the fresh instance the provider
+    # builds per `async with self._client_factory()`.
+    renew_calls: list[dict] = []
+
     async def __aenter__(self):
         return self
 
@@ -50,6 +55,13 @@ class _FakeArtemidaClient:
         return SimpleNamespace(
             id='art_key_1', devices=kw['devices'], subscription_url='https://vendor/x', expire_at=None
         )
+
+    async def renew_key(self, key_id, *, days, devices=None, idempotency_key=None):
+        # Records the PAID renew the money-critical seam issues via provider.update.
+        type(self).renew_calls.append(
+            {'key_id': key_id, 'days': days, 'devices': devices, 'idempotency_key': idempotency_key}
+        )
+        return SimpleNamespace(id=key_id, devices=devices, expire_at=None)
 
     async def get_subscription_links(self, key_id):
         return {'links': _ARTEMIDA_LINKS, 'count': len(_ARTEMIDA_LINKS)}
@@ -92,8 +104,12 @@ async def test_full_chain_provision_serve_swap(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         'app.services.providers.artemida.settings.ARTEMIDA_REBRAND_BASE_URL', 'https://sub.max/a', raising=False
     )
+    # renew_external() резолвит вендора через _external_provider_or_none, который
+    # падает, если ARTEMIDA_ENABLED выключен — включаем для прогонки продления.
+    monkeypatch.setattr('app.services.subscription_service.settings.ARTEMIDA_ENABLED', True, raising=False)
     # Мокаем клиента вендора — денег не тратим, к сети не ходим.
     monkeypatch.setattr('app.services.providers.artemida.ArtemidaClient', lambda *a, **k: _FakeArtemidaClient())
+    _FakeArtemidaClient.renew_calls = []
     # Регистрируем второго (фейкового) вендора для swap.
     from app.services import providers as providers_pkg
 
@@ -144,6 +160,26 @@ async def test_full_chain_provision_serve_swap(monkeypatch, tmp_path, capsys):
             assert sub.external_provider == 'artemida'
             assert sub.subscription_url == f'https://sub.max/a/{token}'
             assert '/art_key_1' not in sub.subscription_url  # НЕ id ключа вендора
+
+        # 2b) Продление ещё на 30 дней: DB двигает end_date (как extend_subscription),
+        #     а renew_external делает ПЛАТНЫЙ renew ключа у вендора — та самая дыра,
+        #     из-за которой раньше клиент платил, а доступ у вендора не продлевался.
+        async with maker() as db:
+            sub = await db.get(Subscription, sub_id)
+            await db.refresh(sub, ['tariff'])
+            sub.end_date = sub.end_date + timedelta(days=30)  # как сделал бы extend_subscription
+            await db.flush()
+            renewed = await SubscriptionService().renew_external(db, sub, period_days=30)
+            await db.refresh(sub)
+            assert renewed is True  # для artemida вернул True (remnawave вернул бы False)
+            assert len(_FakeArtemidaClient.renew_calls) == 1  # вендору ушёл ровно один платный renew
+            assert _FakeArtemidaClient.renew_calls[0]['key_id'] == 'art_key_1'
+            assert _FakeArtemidaClient.renew_calls[0]['days'] == 30
+            assert sub.subscription_url == f'https://sub.max/a/{token}'  # ссылка клиенту НЕ меняется
+            trace.append(
+                f'2b. Продление +30д: renew_external→вендор renew '
+                f'(days={_FakeArtemidaClient.renew_calls[0]["days"]}), ссылка та же {sub.subscription_url}'
+            )
 
         # 3) Клиент открывает свою ссылку → ребренд-роут отдаёт переодетый конфиг.
         app = FastAPI()

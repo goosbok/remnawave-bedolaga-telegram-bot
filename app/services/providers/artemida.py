@@ -189,3 +189,62 @@ class ArtemidaProvider:
         async with self._client_factory() as client:
             data = await client.get_subscription_links(subscription.external_ref)
         return list(data.get('links') or [])
+
+    def _rebrand_headers(self, vendor_headers) -> dict[str, str]:
+        """Swap the vendor's brand headers for ours; drop its web page/announce.
+
+        Node names inside the body (country remarks) are the vendor's and kept
+        as-is — only the brand surface (title/support) is ours. The vendor's
+        ``profile-web-page-url`` and ``announce`` are dropped so its domain/brand
+        never reach the client.
+        """
+        import base64
+
+        out: dict[str, str] = {}
+        title = (settings.ARTEMIDA_BRAND_TITLE or 'VPN').strip()
+        out['profile-title'] = 'base64:' + base64.b64encode(title.encode()).decode()
+        out['profile-update-interval'] = vendor_headers.get('profile-update-interval', '12') or '12'
+        support = (settings.ARTEMIDA_BRAND_SUPPORT_URL or '').strip()
+        if support:
+            out['support-url'] = support
+        return out
+
+    async def fetch_subscription(
+        self, subscription: Subscription, *, client_headers: dict[str, str]
+    ) -> tuple[bytes, str, dict[str, str]]:
+        """Fetch the vendor's REAL subscription document under our branding.
+
+        The vendor gates real nodes behind an ``x-hwid`` device-binding header:
+        without it the smart subscription URL only returns a "use the recommended
+        app / enable HWID" placeholder (``0.0.0.0:1``). We forward the client's
+        own ``x-hwid`` + ``User-Agent`` so the vendor returns real nodes AND counts
+        devices correctly, then rewrite the brand headers to ours.
+
+        Returns ``(body, content_type, rebranded_headers)``.
+        """
+        if not subscription.external_ref:
+            return b'', 'text/plain; charset=utf-8', {}
+        async with self._client_factory() as client:
+            key = await client.get_key(subscription.external_ref)
+        vendor_url = key.subscription_url
+        if not vendor_url:
+            return b'', 'text/plain; charset=utf-8', {}
+        forwarded = {
+            name: client_headers[name]
+            for name in ('user-agent', 'x-hwid', 'accept')
+            if client_headers.get(name)
+        }
+        body, content_type, vendor_headers = await self._fetch_vendor_document(vendor_url, forwarded)
+        return body, content_type, self._rebrand_headers(vendor_headers)
+
+    async def _fetch_vendor_document(
+        self, url: str, headers: dict[str, str]
+    ) -> tuple[bytes, str, dict[str, str]]:
+        """HTTP seam for the vendor's smart subscription URL (patched in tests)."""
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, allow_redirects=True) as resp:
+                body = await resp.read()
+                content_type = resp.headers.get('content-type', 'text/plain; charset=utf-8')
+                return body, content_type, dict(resp.headers)

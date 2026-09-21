@@ -47,7 +47,7 @@ logger = structlog.get_logger(__name__)
 # Cosmetic only: the trial is never actually sold at this tariff's own price/
 # duration.  activate_unlimited_trial() hardcodes duration_days=1 and
 # traffic_limit_gb=0 at activation time regardless of what's stored here.
-TARIFF_NAME = 'Безлимит · 1 день'
+TARIFF_NAME = 'Премиум подписка на 1 день'
 
 
 async def _find_existing_unlimited_trial_tariff(db: AsyncSession) -> Tariff | None:

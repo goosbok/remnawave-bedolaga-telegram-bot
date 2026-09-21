@@ -58,7 +58,12 @@ def _provision_days(subscription) -> int:
         end = end.replace(tzinfo=UTC)
     if start.tzinfo is None:
         start = start.replace(tzinfo=UTC)
-    return max(1, (end - start).days)
+    # Round, do NOT truncate: end_date and start_date are captured by separate
+    # now() calls at purchase, so a nominal 30-day term lands a few ms short
+    # (e.g. 29d 23:59:59.995) and `.days` would floor it to 29 — a value the
+    # vendor rejects outright, since it only accepts the discrete periods
+    # {7,30,60,90} (a non-period day count -> "параметры покупки вне диапазона").
+    return max(1, round((end - start).total_seconds() / 86400))
 
 
 class _ArtemidaProvisionResult:

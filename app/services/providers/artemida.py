@@ -56,40 +56,54 @@ class ArtemidaProvider:
         if not settings.ARTEMIDA_REBRAND_BASE_URL:
             raise ArtemidaAPIError('ARTEMIDA_REBRAND_BASE_URL is not configured')
 
-        devices = subscription.tariff.device_limit
-        chunks = _chunk_days(days)
+        is_trial = bool(getattr(subscription, 'is_trial', False))
         async with self._client_factory() as client:
-            key = await client.create_key(
-                days=chunks[0],
-                devices=devices,
-                name=f'sub{subscription.id}',
-                customer_ref=str(subscription.id),
-                idempotency_key=f'sub-{subscription.id}-provision-0',
-            )
-            chunks_done = 1  # the create_key chunk (chunk 0) already succeeded
-            try:
-                for i, chunk in enumerate(chunks[1:], start=1):
-                    await client.renew_key(
-                        key.id,
-                        days=chunk,
-                        idempotency_key=f'sub-{subscription.id}-provision-{i}',
-                    )
-                    chunks_done += 1
-            except Exception:
-                # A chunk AFTER the first failed: the vendor key was already created
-                # (and possibly renewed further) before this failure, so the owner has
-                # already paid for chunks_done/len(chunks) chunks of an orphaned,
-                # partial-coverage key — distinct from an ordinary single-call failure,
-                # where nothing was ever charged. Flag it for ops, then propagate as-is
-                # so the caller's rollback path (which does not touch the vendor) runs.
-                logger.warning(
-                    'Artemida provision: частичная оплата — создан ключ, но не все чанки продлены',
-                    subscription_id=subscription.id,
-                    key_id=key.id,
-                    chunks_total=len(chunks),
-                    chunks_done=chunks_done,
+            if is_trial:
+                # A trial is a SEPARATE vendor endpoint (POST /trial) with a
+                # vendor-fixed duration and device count. create_key must NOT be
+                # used for it: the vendor only accepts the discrete paid periods
+                # {7,30,60,90}, so a 1-day trial routed through create_key is
+                # rejected as "параметры покупки вне допустимого диапазона".
+                key = await client.create_trial(
+                    idempotency_key=f'sub-{subscription.id}-trial',
                 )
-                raise
+                devices = key.devices or subscription.tariff.device_limit
+                n_chunks = 1
+            else:
+                devices = subscription.tariff.device_limit
+                chunks = _chunk_days(days)
+                n_chunks = len(chunks)
+                key = await client.create_key(
+                    days=chunks[0],
+                    devices=devices,
+                    name=f'sub{subscription.id}',
+                    customer_ref=str(subscription.id),
+                    idempotency_key=f'sub-{subscription.id}-provision-0',
+                )
+                chunks_done = 1  # the create_key chunk (chunk 0) already succeeded
+                try:
+                    for i, chunk in enumerate(chunks[1:], start=1):
+                        await client.renew_key(
+                            key.id,
+                            days=chunk,
+                            idempotency_key=f'sub-{subscription.id}-provision-{i}',
+                        )
+                        chunks_done += 1
+                except Exception:
+                    # A chunk AFTER the first failed: the vendor key was already created
+                    # (and possibly renewed further) before this failure, so the owner has
+                    # already paid for chunks_done/len(chunks) chunks of an orphaned,
+                    # partial-coverage key — distinct from an ordinary single-call failure,
+                    # where nothing was ever charged. Flag it for ops, then propagate as-is
+                    # so the caller's rollback path (which does not touch the vendor) runs.
+                    logger.warning(
+                        'Artemida provision: частичная оплата — создан ключ, но не все чанки продлены',
+                        subscription_id=subscription.id,
+                        key_id=key.id,
+                        chunks_total=len(chunks),
+                        chunks_done=chunks_done,
+                    )
+                    raise
         subscription.external_provider = self.name
         subscription.external_ref = key.id
         subscription.device_limit = devices
@@ -98,7 +112,7 @@ class ArtemidaProvider:
         subscription.subscription_url = self.build_subscription_url(subscription)
         subscription.status = SubscriptionStatus.ACTIVE.value
         logger.info(
-            'Ключ Artemida выдан', subscription_id=subscription.id, key_id=key.id, days=days, chunks=len(chunks)
+            'Ключ Artemida выдан', subscription_id=subscription.id, key_id=key.id, days=days, chunks=n_chunks
         )
 
     async def update(

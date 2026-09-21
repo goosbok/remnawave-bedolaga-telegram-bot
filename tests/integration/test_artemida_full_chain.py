@@ -137,6 +137,7 @@ async def test_full_chain_provision_serve_swap(monkeypatch, tmp_path, capsys):
                 tariff_id=tariff.id,
                 start_date=now,
                 end_date=now + timedelta(days=30),
+                is_trial=False,
                 status=SubscriptionStatus.PENDING.value,
             )
             db.add(sub)

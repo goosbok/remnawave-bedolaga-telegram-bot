@@ -67,6 +67,15 @@ class _FakeArtemidaClient:
             expire_at=None,
         )
 
+    async def create_trial(self, **kwargs):
+        # Trials provision via POST /trial (create_key rejects a 1-day period).
+        return SimpleNamespace(
+            id='key_unltrial_1',
+            devices=2,
+            subscription_url='https://vendor/x',
+            expire_at=None,
+        )
+
 
 def _configure_artemida(monkeypatch) -> None:
     monkeypatch.setattr('app.config.settings.ARTEMIDA_ENABLED', True, raising=False)

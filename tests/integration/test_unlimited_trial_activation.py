@@ -81,6 +81,19 @@ class _FakeArtemidaClient:
             expire_at=None,
         )
 
+    async def create_trial(self, **kwargs):
+        # The trial provisions via POST /trial, not create_key (the vendor rejects
+        # a 1-day create_key as out-of-range). Devices are vendor-fixed at 2.
+        if self._fail_with is not None:
+            raise self._fail_with
+        self.kwargs = kwargs
+        return SimpleNamespace(
+            id='key_trial_1',
+            devices=2,
+            subscription_url='https://vendor/x',
+            expire_at=None,
+        )
+
 
 def _configure_artemida(monkeypatch, *, fail_with: Exception | None = None) -> _FakeArtemidaClient:
     monkeypatch.setattr('app.config.settings.ARTEMIDA_ENABLED', True, raising=False)
@@ -138,7 +151,9 @@ async def test_activation_creates_unlimited_trial(monkeypatch):
         assert subscription.external_ref == 'key_trial_1'
         assert subscription.tariff_id == tariff.id
         assert fake_client.kwargs is not None
-        assert fake_client.kwargs['devices'] == tariff.device_limit
+        # Trial provisions via create_trial (vendor-fixed devices), so the device
+        # limit is taken from the returned key rather than a create_key argument.
+        assert subscription.device_limit == tariff.device_limit
 
         await db.refresh(user, ['subscriptions'])
         assert user.has_used_trial('unlimited') is True

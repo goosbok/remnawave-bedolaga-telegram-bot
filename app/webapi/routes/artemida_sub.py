@@ -16,9 +16,11 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
+from app.config import settings
 from app.database.database import AsyncSessionLocal
 from app.database.models import Subscription
 from app.services.providers import get_provider_by_name
+from app.webapi.routes.artemida_install import render_install_page, wants_install_page
 
 
 logger = structlog.get_logger(__name__)
@@ -42,6 +44,16 @@ async def artemida_subscription(token: str, request: Request) -> Response:
     # Forward the client's own headers so the vendor unlocks real nodes: it gates
     # them behind ``x-hwid`` (device binding) and varies the format by User-Agent.
     client_headers = {key.lower(): value for key, value in request.headers.items()}
+    # A human opening the link in a browser gets the MAX-branded install page; a VPN
+    # client gets the config. (Browsers send no x-hwid, so this burns no device slot.)
+    if wants_install_page(client_headers):
+        page = await render_install_page(
+            subscription,
+            sub_url=subscription.subscription_url or str(request.url),
+            brand_title=settings.ARTEMIDA_BRAND_TITLE,
+            support_url=settings.ARTEMIDA_BRAND_SUPPORT_URL,
+        )
+        return Response(content=page, media_type='text/html; charset=utf-8')
     try:
         body, content_type, headers = await provider.fetch_subscription(
             subscription, client_headers=client_headers

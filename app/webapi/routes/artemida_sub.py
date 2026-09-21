@@ -13,14 +13,12 @@ rebrands the result into our own base64 subscription document (see
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
-from app.config import settings
 from app.database.database import AsyncSessionLocal
 from app.database.models import Subscription
 from app.services.providers import get_provider_by_name
-from app.services.subscription_rebrand import rebrand_links
 
 
 logger = structlog.get_logger(__name__)
@@ -34,28 +32,24 @@ async def _load_subscription_by_token(public_token: str) -> Subscription | None:
 
 
 @router.get('/a/{token}')
-async def artemida_subscription(token: str) -> Response:
+async def artemida_subscription(token: str, request: Request) -> Response:
     subscription = await _load_subscription_by_token(token)
     if subscription is None:
         raise HTTPException(status_code=404, detail='not found')
     provider = get_provider_by_name(subscription.external_provider)
     if provider is None or provider.name == 'remnawave':
         raise HTTPException(status_code=404, detail='not found')
+    # Forward the client's own headers so the vendor unlocks real nodes: it gates
+    # them behind ``x-hwid`` (device binding) and varies the format by User-Agent.
+    client_headers = {key.lower(): value for key, value in request.headers.items()}
     try:
-        links = await provider.fetch_links(subscription)
+        body, content_type, headers = await provider.fetch_subscription(
+            subscription, client_headers=client_headers
+        )
     except Exception as error:
-        # Any failure to fetch links from the vendor — artemida-specific
-        # (ArtemidaAPIError) or a future vendor's own exception type — is a gateway
-        # error, not a bug in this route: report it as 502, never let it fall through
-        # to FastAPI's generic 500.
-        logger.warning('rebrand fetch_links failed', token=token, error=str(error))
+        # Any failure to reach the vendor — artemida-specific (ArtemidaAPIError) or
+        # a future vendor's own exception type — is a gateway error, not a bug in
+        # this route: report 502, never fall through to FastAPI's generic 500.
+        logger.warning('rebrand fetch_subscription failed', token=token, error=str(error))
         raise HTTPException(status_code=502, detail='vendor unavailable') from error
-    if not links:
-        logger.warning('rebrand links пусты', token=token)
-    doc = rebrand_links(
-        list(links),
-        title=settings.ARTEMIDA_BRAND_TITLE,
-        remark_prefix=(settings.ARTEMIDA_BRAND_TITLE.split() or ['VPN'])[0],
-        support_url=settings.ARTEMIDA_BRAND_SUPPORT_URL,
-    )
-    return Response(content=doc.body, media_type='text/plain', headers=doc.headers)
+    return Response(content=body, media_type=content_type, headers=headers)

@@ -8,9 +8,9 @@
 
 from __future__ import annotations
 
-import base64
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -37,7 +37,6 @@ _ARTEMIDA_LINKS = [
     'vless://11111111-1111-4111-8111-111111111111@de.artemida:443?type=tcp#Netherlands 1',
     'trojan://artpass@nl.artemida:443#NL 2',
 ]
-_VENDOR2_LINKS = ['vless://22222222-2222-4222-8222-222222222222@fr.vendor2:443?type=ws#Paris 1']
 
 
 class _FakeArtemidaClient:
@@ -64,7 +63,10 @@ class _FakeArtemidaClient:
         return SimpleNamespace(id=key_id, devices=devices, expire_at=None)
 
     async def get_subscription_links(self, key_id):
-        return {'links': _ARTEMIDA_LINKS, 'count': len(_ARTEMIDA_LINKS)}
+        return {'links': _ARTEMIDA_LINKS, 'count': len(_ARTEMIDA_LINKS), 'subscriptionUrl': 'https://vendor/x'}
+
+    async def get_key(self, key_id):
+        return SimpleNamespace(id=key_id, devices=3, subscription_url='https://vendor/x', expire_at=None)
 
     async def revoke_key(self, key_id, **kw):
         return {'ok': True}
@@ -81,8 +83,9 @@ class _FakeVendor2Provider:
         subscription.subscription_url = f'{base}/{subscription.public_token}'  # тот же public_token
         subscription.status = SubscriptionStatus.ACTIVE.value
 
-    async def fetch_links(self, subscription):
-        return _VENDOR2_LINKS
+    async def fetch_subscription(self, subscription, *, client_headers):
+        # Same client link, different vendor's nodes, still our brand header.
+        return b'[{"remarks":"vendor2 Paris"}]', 'application/json', {'profile-title': 'base64:TUFYIFZQTg=='}
 
     async def revoke(self, *, db, subscription):
         return None
@@ -109,6 +112,12 @@ async def test_full_chain_provision_serve_swap(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr('app.services.subscription_service.settings.ARTEMIDA_ENABLED', True, raising=False)
     # Мокаем клиента вендора — денег не тратим, к сети не ходим.
     monkeypatch.setattr('app.services.providers.artemida.ArtemidaClient', lambda *a, **k: _FakeArtemidaClient())
+    # The serve step proxies the vendor's smart URL over HTTP — patch that seam so no
+    # real network call happens; the route still rebrands the headers to ours.
+    monkeypatch.setattr(
+        'app.services.providers.artemida.ArtemidaProvider._fetch_vendor_document',
+        AsyncMock(return_value=(b'[{"remarks":"artemida Germany"}]', 'application/json', {'profile-title': 'base64:vendor'})),
+    )
     _FakeArtemidaClient.renew_calls = []
     # Регистрируем второго (фейкового) вендора для swap.
     from app.services import providers as providers_pkg
@@ -188,12 +197,11 @@ async def test_full_chain_provision_serve_swap(monkeypatch, tmp_path, capsys):
         async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
             r1 = await ac.get(f'/a/{token}')
         assert r1.status_code == 200
-        doc1 = base64.b64decode(r1.text).decode().strip().splitlines()
-        trace.append(f'3. GET /a/{token} → 200, profile-title={r1.headers.get("profile-title")}')
-        for ln in doc1:
-            trace.append(f'   {ln}')
-        assert all(ln.rsplit('#', 1)[-1].startswith('MAX ') for ln in doc1)  # remark переодет
-        assert '.artemida:' in doc1[0]  # ноды вендора Artemida
+        # The vendor's real body is passed through (its country node names kept);
+        # only the brand header is swapped to ours.
+        assert r1.content == b'[{"remarks":"artemida Germany"}]'
+        assert r1.headers['profile-title'] == 'base64:TUFYIFZQTg=='  # base64('MAX VPN'), not the vendor's
+        trace.append(f'3. GET /a/{token} → 200, ноды artemida, бренд MAX')
 
         # 4) Artemida «заблокировали» → оператор жмёт swap на vendor2 (на остаток срока).
         async with maker() as db:
@@ -210,12 +218,10 @@ async def test_full_chain_provision_serve_swap(monkeypatch, tmp_path, capsys):
         async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
             r2 = await ac.get(f'/a/{token}')
         assert r2.status_code == 200
-        doc2 = base64.b64decode(r2.text).decode().strip().splitlines()
-        trace.append(f'5. GET /a/{token} (та же ссылка) → 200, теперь ноды vendor2:')
-        for ln in doc2:
-            trace.append(f'   {ln}')
-        assert '.vendor2:' in doc2[0]  # ноды уже нового вендора
-        assert all(ln.rsplit('#', 1)[-1].startswith('MAX ') for ln in doc2)
+        # Same client link, now serving the NEW vendor's nodes, still our brand.
+        assert r2.content == b'[{"remarks":"vendor2 Paris"}]'
+        assert r2.headers['profile-title'] == 'base64:TUFYIFZQTg=='
+        trace.append(f'5. GET /a/{token} (та же ссылка) → 200, теперь ноды vendor2, бренд MAX')
     finally:
         providers_pkg._PROVIDERS.clear()
         providers_pkg._PROVIDERS.update(saved)

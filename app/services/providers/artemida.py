@@ -207,6 +207,11 @@ class ArtemidaProvider:
         support = (settings.ARTEMIDA_BRAND_SUPPORT_URL or '').strip()
         if support:
             out['support-url'] = support
+        # Our info block (announce) instead of the vendor's — `\n` in the config
+        # value is a literal backslash-n from .env, so unescape it to real newlines.
+        announce = (settings.ARTEMIDA_BRAND_ANNOUNCE or '').replace('\\n', '\n').strip()
+        if announce:
+            out['announce'] = 'base64:' + base64.b64encode(announce.encode()).decode()
         return out
 
     async def fetch_subscription(

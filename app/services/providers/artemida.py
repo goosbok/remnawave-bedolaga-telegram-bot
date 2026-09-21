@@ -138,6 +138,11 @@ class ArtemidaProvider:
             if days is not None:
                 chunks = _chunk_days(days)
                 ts = int(subscription.end_date.timestamp())
+                # The vendor's /renew REQUIRES both days AND devices as integers
+                # ("Передайте целые days и devices"): a plain renewal that omits
+                # devices is rejected. On a renewal with no device change, carry the
+                # subscription's current device count.
+                renew_devices = devices if devices is not None else subscription.device_limit
                 for i, chunk in enumerate(chunks):
                     # devices is sent on EVERY chunk, not just the first: whether the
                     # vendor leaves the device count unchanged when the field is
@@ -146,7 +151,7 @@ class ArtemidaProvider:
                     await client.renew_key(
                         subscription.external_ref,
                         days=chunk,
-                        devices=devices,
+                        devices=renew_devices,
                         idempotency_key=f'sub-{subscription.id}-renew-{ts}-{i}',
                     )
                 if devices is not None:

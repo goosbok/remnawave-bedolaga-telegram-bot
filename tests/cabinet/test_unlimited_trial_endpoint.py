@@ -293,3 +293,79 @@ async def test_trial_info_reports_unlimited_unavailable_when_already_used(monkey
         response = await get_trial_info(user=user, db=db)
 
     assert response.unlimited is False
+
+
+def _active_unlimited_trial(user_id: int, tariff_id: int) -> Subscription:
+    """An ACTIVE (not expired) unlimited (Artemida) trial for this user."""
+    now = datetime.now(UTC)
+    return Subscription(
+        user_id=user_id,
+        tariff_id=tariff_id,
+        status='active',
+        is_trial=True,
+        external_provider='artemida',
+        external_ref='key_active',
+        start_date=now - timedelta(hours=1),
+        end_date=now + timedelta(days=1),
+        traffic_limit_gb=0,
+        device_limit=2,
+        remnawave_short_id='act1',
+    )
+
+
+def _active_paid(user_id: int, tariff_id: int) -> Subscription:
+    """An ACTIVE non-trial (paid) subscription for this user."""
+    now = datetime.now(UTC)
+    return Subscription(
+        user_id=user_id,
+        tariff_id=tariff_id,
+        status='active',
+        is_trial=False,
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=30),
+        traffic_limit_gb=100,
+        device_limit=2,
+        remnawave_short_id='paid1',
+    )
+
+
+@pytest.mark.asyncio
+async def test_trial_info_limited_available_with_active_unlimited_trial(monkeypatch):
+    """Активный ПРЕМИУМ-пробник не блокирует бесплатный (лимитный): оба берутся
+    в любом порядке. Раньше активная подписка любого рода закрывала лимитный."""
+    from app.cabinet.routes.subscription_modules.purchase import get_trial_info
+
+    _configure_artemida(monkeypatch)
+
+    async with memory_session(monkeypatch, _TABLES) as db:
+        tariff = await _make_trial_tariff(db)
+        user = await _make_user(db)
+
+        db.add(_active_unlimited_trial(user.id, tariff.id))
+        await db.commit()
+        await db.refresh(user, ['subscriptions'])
+
+        response = await get_trial_info(user=user, db=db)
+
+    assert response.is_available is True
+
+
+@pytest.mark.asyncio
+async def test_trial_info_limited_unavailable_with_active_paid(monkeypatch):
+    """Активная ПЛАТНАЯ подписка по-прежнему блокирует бесплатный (лимитный)
+    триал — послабление не должно раздавать триалы платящим."""
+    from app.cabinet.routes.subscription_modules.purchase import get_trial_info
+
+    _configure_artemida(monkeypatch)
+
+    async with memory_session(monkeypatch, _TABLES) as db:
+        tariff = await _make_trial_tariff(db)
+        user = await _make_user(db)
+
+        db.add(_active_paid(user.id, tariff.id))
+        await db.commit()
+        await db.refresh(user, ['subscriptions'])
+
+        response = await get_trial_info(user=user, db=db)
+
+    assert response.is_available is False

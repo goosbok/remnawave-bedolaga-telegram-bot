@@ -990,39 +990,36 @@ async def purchase_tariff(
         # остаются снаружи guard'а: их сбой не должен возвращать деньги за уже
         # выданную подписку.
         try:
-            # --- Trial cleanup: find and kill all trials BEFORE creating/extending ---
+            # --- Trial handling before creating/extending the paid subscription ---
             from app.database.crud.subscription import deactivate_user_trial_subscriptions
 
             # Collect remaining trial seconds (перенос — по общему правилу:
             # TARIFF_SWITCH_RESET_FREE_DAYS перебивает TRIAL_ADD_REMAINING_DAYS_TO_PAID).
             _bonus_seconds = 0
             _now_trial = datetime.now(UTC)
-            # В мульти-тарифе create-ветка ниже (нет живой подписки покупаемого
-            # тарифа) НЕ должна глушить живой триал здесь: create_paid_subscription
-            # конвертирует его на месте (та же строка, тот же Remnawave-юзер и
-            # ссылка) вместо вставки новой подписки. Убив его заранее, мы бы
-            # спрятали кандидата от конверсии и вернули старое поведение — новый
-            # панельный юзер + мёртвый триал, висящий в кабинете. Его остаток
-            # дней переносит extend_subscription внутри конверсии, поэтому в
-            # _bonus_seconds кандидат не попадает — двойного начисления нет.
-            # resolve_trial_conversion_candidate повторяет приоритеты
-            # create_paid_subscription (в т.ч. вернёт None, когда сработает
-            # revive-ветка #3004) — тогда триал глушится по-старому: с переносом
-            # остатка и отключением панельного юзера в цикле ниже.
+            # Никогда не конвертируем триал в оплаченную подписку: покупка не
+            # переиспользует пробную строку/ключ (решение владельца — см. #1
+            # в разборе two-trials). Оставляем None, чтобы create_paid_subscription
+            # всегда делал СВЕЖУЮ подписку.
             _conversion_trial = None
             if subscription is None and settings.is_multi_tariff_enabled():
-                from app.database.crud.subscription import resolve_trial_conversion_candidate
-
-                _conversion_trial = await resolve_trial_conversion_candidate(db, user.id, tariff.id)
-            killed_trials = await deactivate_user_trial_subscriptions(
-                db,
-                user.id,
-                exclude_subscription_id=subscription.id if subscription else getattr(_conversion_trial, 'id', None),
-            )
-            if should_carry_trial_remaining_days():
-                for _kt in killed_trials:
-                    if _kt.end_date and _kt.end_date > _now_trial:
-                        _bonus_seconds += max(0, (_kt.end_date - _now_trial).total_seconds())
+                # Мульти-тариф + покупка НОВОГО тарифа: подписка ДОБАВЛЯЕТСЯ
+                # отдельно, а пробники НЕ трогаем — ни гашения, ни конвертации, ни
+                # переноса дней. Оба пробника продолжают идти рядом с платной
+                # подпиской (у неё свой Remnawave-юзер/ссылка).
+                killed_trials = []
+            else:
+                # Одно-тарифный режим или продление своей подписки: как раньше —
+                # гасим триалы и (по флагу) переносим их остаток дней в оплату.
+                killed_trials = await deactivate_user_trial_subscriptions(
+                    db,
+                    user.id,
+                    exclude_subscription_id=subscription.id if subscription else None,
+                )
+                if should_carry_trial_remaining_days():
+                    for _kt in killed_trials:
+                        if _kt.end_date and _kt.end_date > _now_trial:
+                            _bonus_seconds += max(0, (_kt.end_date - _now_trial).total_seconds())
 
             # Защитная ветка: собственный триал исключён из deactivate выше и сюда
             # НЕ попадает — его конвертацию (is_trial=False) выполняет
@@ -1047,7 +1044,11 @@ async def purchase_tariff(
                     connected_squads=squads,
                 )
             else:
-                # Create new subscription (или конверсия исключённого выше триала)
+                # Create a NEW, separate subscription. convert_alive_trial=False:
+                # покупка тарифа в кабинете НЕ конвертирует и не гасит пробники —
+                # они продолжают идти рядом (решение владельца, #1 two-trials).
+                # В одно-тарифном режиме внутренняя конверсия и так не срабатывает
+                # (она под флагом мульти-тарифа), так что флаг там безвреден.
                 try:
                     subscription = await create_paid_subscription(
                         db=db,
@@ -1058,6 +1059,7 @@ async def purchase_tariff(
                         connected_squads=squads,
                         tariff_id=tariff.id,
                         conversion_trial=_conversion_trial,
+                        convert_alive_trial=False,
                     )
                 except IntegrityError:
                     # Partial unique index violation: user already has active subscription for this tariff
@@ -1359,9 +1361,14 @@ async def get_trial_info(
     except Exception as e:
         logger.error('Error getting trial tariff for info', error=e)
 
-    # Check if user already has an active subscription
+    # Активная ПЛАТНАЯ подписка блокирует бесплатный триал; активный ПРОБНИК — нет.
+    # Так «Обычный» и «Премиум» пробники берутся оба в любом порядке (повтор того
+    # же пробника всё равно закрыт is_trial_already_used / has_used_trial('unlimited')).
     subs = getattr(user, 'subscriptions', None) or []
-    has_active = any(s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) for s in subs)
+    has_active = any(
+        s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) and not s.is_trial
+        for s in subs
+    )
     has_used_trial = user.is_trial_already_used()
 
     if has_active:
@@ -1418,9 +1425,14 @@ async def activate_trial(
             detail='Trial is not available for your account type',
         )
 
-    # Check if user already has an active subscription
+    # Активная ПЛАТНАЯ подписка блокирует бесплатный триал; активный ПРОБНИК — нет
+    # (симметрично get_trial_info) — чтобы «Обычный» и «Премиум» брались в любом
+    # порядке. Повтор того же пробника закрыт is_trial_already_used ниже.
     subs = getattr(user, 'subscriptions', None) or []
-    has_active = any(s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) for s in subs)
+    has_active = any(
+        s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) and not s.is_trial
+        for s in subs
+    )
     if has_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

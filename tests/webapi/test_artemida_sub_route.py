@@ -129,3 +129,25 @@ async def test_non_artemida_vendor_error_also_returns_502(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as ac:
         r = await ac.get('/a/tok_1')
     assert r.status_code == 502
+
+
+def test_rebrand_headers_inject_brand_support_and_announce(monkeypatch):
+    """_rebrand_headers swaps the vendor's brand for ours and injects our info block."""
+    import base64
+
+    from app.services.providers.artemida import ArtemidaProvider
+
+    monkeypatch.setattr('app.services.providers.artemida.settings.ARTEMIDA_BRAND_TITLE', 'MAX VPN', raising=False)
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_BRAND_SUPPORT_URL', 'https://t.me/MaxSupport2', raising=False
+    )
+    monkeypatch.setattr(
+        'app.services.providers.artemida.settings.ARTEMIDA_BRAND_ANNOUNCE', 'Строка 1\\nСтрока 2', raising=False
+    )
+    out = ArtemidaProvider()._rebrand_headers(
+        {'profile-title': 'base64:vendor', 'announce': 'base64:vendor', 'support-url': 'https://t.me/ArtemidaSupportBot'}
+    )
+    assert base64.b64decode(out['profile-title'].removeprefix('base64:')).decode() == 'MAX VPN'
+    assert out['support-url'] == 'https://t.me/MaxSupport2'
+    # \n from .env is unescaped to a real newline
+    assert base64.b64decode(out['announce'].removeprefix('base64:')).decode() == 'Строка 1\nСтрока 2'

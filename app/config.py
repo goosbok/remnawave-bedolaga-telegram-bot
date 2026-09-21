@@ -249,6 +249,8 @@ class Settings(BaseSettings):
     # Брендинг подписки, отдаваемой клиенту.
     ARTEMIDA_BRAND_TITLE: str = 'MAX VPN'
     ARTEMIDA_BRAND_SUPPORT_URL: str = ''
+    # Инфо-блок (announce), который клиент показывает над серверами. `\n` = перенос.
+    ARTEMIDA_BRAND_ANNOUNCE: str = ''
 
     ARTEMIDA_TRIAL_ENABLED: bool = False
     ARTEMIDA_TRIAL_TARIFF_ID: int = 0  # 0 = резолвить по provider='artemida' + is_trial_available

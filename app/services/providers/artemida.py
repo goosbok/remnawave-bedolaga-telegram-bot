@@ -33,6 +33,16 @@ def _chunk_days(days: int) -> list[int]:
     return chunks
 
 
+async def _maybe_alert_low_balance() -> None:
+    """After a vendor spend, ping admins if the balance is low. Best-effort."""
+    try:
+        from app.services.artemida_balance_alert import check_balance_and_alert
+
+        await check_balance_and_alert()
+    except Exception:
+        pass
+
+
 class ArtemidaProvider:
     name = 'artemida'
 
@@ -114,6 +124,7 @@ class ArtemidaProvider:
         logger.info(
             'Ключ Artemida выдан', subscription_id=subscription.id, key_id=key.id, days=days, chunks=n_chunks
         )
+        await _maybe_alert_low_balance()
 
     async def update(
         self, *, db: AsyncSession, subscription: Subscription, days: int | None = None, devices: int | None = None
@@ -157,6 +168,8 @@ class ArtemidaProvider:
                 )
                 subscription.device_limit = devices
                 logger.info('Ключ Artemida обновлён (устройства)', subscription_id=subscription.id, devices=devices)
+        if days is not None or devices is not None:
+            await _maybe_alert_low_balance()
 
     async def revoke(self, *, db: AsyncSession, subscription: Subscription) -> None:
         if not subscription.external_ref:

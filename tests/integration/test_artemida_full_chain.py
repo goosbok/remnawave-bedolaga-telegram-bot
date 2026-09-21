@@ -185,6 +185,9 @@ async def test_full_chain_provision_serve_swap(monkeypatch, tmp_path, capsys):
             assert len(_FakeArtemidaClient.renew_calls) == 1  # вендору ушёл ровно один платный renew
             assert _FakeArtemidaClient.renew_calls[0]['key_id'] == 'art_key_1'
             assert _FakeArtemidaClient.renew_calls[0]['days'] == 30
+            # The vendor's /renew requires an integer devices too — a plain renewal
+            # must carry the subscription's current device count (3), not None.
+            assert _FakeArtemidaClient.renew_calls[0]['devices'] == 3
             assert sub.subscription_url == f'https://sub.max/a/{token}'  # ссылка клиенту НЕ меняется
             trace.append(
                 f'2b. Продление +30д: renew_external→вендор renew '

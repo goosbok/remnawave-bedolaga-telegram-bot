@@ -285,6 +285,8 @@ def _build_subscription_info(subscription: Subscription, tariff_name: str | None
         autopay_enabled=subscription.autopay_enabled,
         is_active=is_active,
         days_remaining=days_remaining,
+        subscription_url=subscription.subscription_url,
+        external_provider=subscription.external_provider,
     )
 
 

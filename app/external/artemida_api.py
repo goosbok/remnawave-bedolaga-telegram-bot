@@ -13,6 +13,7 @@ HTTP-коды: 402 — недостаточно средств на API-коше
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Self
 
@@ -110,34 +111,53 @@ class ArtemidaClient:
         if idempotency_key:
             headers['Idempotency-Key'] = idempotency_key
         url = f'{self.base_url}{path}'
-        try:
-            async with self._session.request(method, url, json=json, headers=headers) as resp:
-                try:
-                    body = await resp.json()
-                except (aiohttp.ContentTypeError, aiohttp.ClientPayloadError, ValueError) as exc:
-                    # Тело не распарсилось: платный вызов мог уже отработать на вендоре —
-                    # это НЕ успех, нельзя молча вернуть {}.
-                    raise ArtemidaGatewayError(
-                        f'Неразбираемый ответ вендора (HTTP {resp.status})', status=resp.status
-                    ) from exc
-                if resp.status >= 400 or body.get('ok') is False:
-                    err = (body or {}).get('error') or {}
-                    code = err.get('code')
-                    message = err.get('message') or f'HTTP {resp.status}'
-                    retry_after = None
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                async with self._session.request(method, url, json=json, headers=headers) as resp:
                     try:
-                        retry_after = (
-                            float(resp.headers.get('Retry-After')) if resp.headers.get('Retry-After') else None
-                        )
-                    except (TypeError, ValueError):
+                        body = await resp.json()
+                    except (aiohttp.ContentTypeError, aiohttp.ClientPayloadError, ValueError) as exc:
+                        # Тело не распарсилось: платный вызов мог уже отработать на вендоре —
+                        # это НЕ успех, нельзя молча вернуть {}.
+                        raise ArtemidaGatewayError(
+                            f'Неразбираемый ответ вендора (HTTP {resp.status})', status=resp.status
+                        ) from exc
+                    if resp.status >= 400 or body.get('ok') is False:
+                        err = (body or {}).get('error') or {}
+                        code = err.get('code')
+                        message = err.get('message') or f'HTTP {resp.status}'
                         retry_after = None
-                    if code == 'insufficient_balance' or resp.status == 402:
-                        # retry_after намеренно не передаётся: нехватку баланса не лечит ожидание.
-                        raise ArtemidaInsufficientBalance(message, status=resp.status, code=code, data=body)
-                    raise ArtemidaAPIError(message, status=resp.status, code=code, retry_after=retry_after, data=body)
-                return body.get('data') or {}
-        except (aiohttp.ClientError, TimeoutError) as exc:
-            raise ArtemidaGatewayError(f'Сетевая ошибка при обращении к ARTΞMIDA: {exc}') from exc
+                        try:
+                            retry_after = (
+                                float(resp.headers.get('Retry-After')) if resp.headers.get('Retry-After') else None
+                            )
+                        except (TypeError, ValueError):
+                            retry_after = None
+                        if code == 'insufficient_balance' or resp.status == 402:
+                            # retry_after намеренно не передаётся: нехватку баланса не лечит ожидание.
+                            raise ArtemidaInsufficientBalance(message, status=resp.status, code=code, data=body)
+                        raise ArtemidaAPIError(
+                            message, status=resp.status, code=code, retry_after=retry_after, data=body
+                        )
+                    return body.get('data') or {}
+            except (
+                aiohttp.ServerDisconnectedError,
+                aiohttp.ClientConnectorError,
+                aiohttp.ClientOSError,
+                TimeoutError,
+            ) as exc:
+                # Transient connection drop (often a stale keep-alive socket) or timeout.
+                # Retrying a paid call is safe: the Idempotency-Key makes the vendor dedupe
+                # anything that already went through. Back off briefly, then try again.
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                raise ArtemidaGatewayError(f'Сетевая ошибка при обращении к ARTΞMIDA: {exc}') from exc
+            except aiohttp.ClientError as exc:
+                raise ArtemidaGatewayError(f'Сетевая ошибка при обращении к ARTΞMIDA: {exc}') from exc
+        # Unreachable: the loop either returns or raises on the final attempt.
+        raise ArtemidaGatewayError('Сетевая ошибка при обращении к ARTΞMIDA')
 
     # --- keys ---
     async def create_key(

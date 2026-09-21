@@ -70,6 +70,10 @@ class UserSubscriptionInfo(BaseModel):
     days_remaining: int = 0
     purchased_traffic_gb: int = 0
     traffic_purchases: list[TrafficPurchaseItem] = []
+    # Client subscription link + provider (vendor subs aren't in the panel, so the
+    # panel-derived link is empty — surface the stored one for the admin).
+    subscription_url: str | None = None
+    external_provider: str | None = None
 
     # Platega SBP auto-renewal (admin view only — populated by the async
     # builder; the sync builder leaves both at their None default).

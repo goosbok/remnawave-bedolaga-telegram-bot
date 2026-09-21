@@ -254,6 +254,11 @@ class Settings(BaseSettings):
 
     ARTEMIDA_TRIAL_ENABLED: bool = False
     ARTEMIDA_TRIAL_TARIFF_ID: int = 0  # 0 = резолвить по provider='artemida' + is_trial_available
+    # После каждой траты у вендора (покупка/продление) проверяем баланс; если он ниже
+    # порога — шлём отбивку в админ-чат. 0 = проверка выключена.
+    ARTEMIDA_LOW_BALANCE_THRESHOLD: int = 2000
+    # Троттл: не чаще одной отбивки о низком балансе раз в N минут (0 = каждую покупку).
+    ARTEMIDA_LOW_BALANCE_ALERT_INTERVAL_MIN: int = 60
 
     # Ограниченный grace-доступ для продления истёкшей подписки.
     # Режимы: false (выключено), observe (только журнал), true (активно),

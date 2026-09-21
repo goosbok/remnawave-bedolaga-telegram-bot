@@ -616,10 +616,17 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
 
     texts = get_texts(db_user.language)
 
-    # Триал отключён глобально (нулевая длительность) либо для этого типа пользователя
-    if settings.TRIAL_DURATION_DAYS <= 0 or settings.is_trial_disabled_for_user(
-        getattr(db_user, 'auth_type', 'telegram')
-    ):
+    from app.services.unlimited_trial_service import unlimited_trial_available
+
+    unlimited_ok = unlimited_trial_available(db_user)
+
+    # Триал отключён глобально (нулевая длительность) либо для этого типа пользователя.
+    # Тупик ТОЛЬКО если и безлимит-триал (Artemida) недоступен тоже — иначе экран
+    # должен остаться достижимым и предложить его вместо лимитного.
+    if (
+        settings.TRIAL_DURATION_DAYS <= 0
+        or settings.is_trial_disabled_for_user(getattr(db_user, 'auth_type', 'telegram'))
+    ) and not unlimited_ok:
         await callback.message.edit_text(
             texts.t('TRIAL_DISABLED_FOR_USER_TYPE', 'Пробный период недоступен'),
             reply_markup=get_back_keyboard(db_user.language),
@@ -627,13 +634,30 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
         await callback.answer()
         return
 
-    # Проверяем, использовал ли пользователь триал
+    # Проверяем, использовал ли пользователь (лимитный) триал. Тот же принцип:
+    # не тупик, если всё же доступен безлимит-триал.
     # PENDING триальные подписки не считаются - пользователь может повторить оплату
     # Multi-tariff note: db_user.subscription returns the first active/most recent
     # subscription. In multi-tariff mode a user can have multiple subscriptions, but
     # trial eligibility is still "has any subscription" so this check is correct.
-    if db_user.is_trial_already_used():
+    if db_user.is_trial_already_used() and not unlimited_ok:
         await callback.message.edit_text(texts.TRIAL_ALREADY_USED, reply_markup=get_back_keyboard(db_user.language))
+        await callback.answer()
+        return
+
+    limited_ok = (
+        settings.TRIAL_DURATION_DAYS > 0
+        and not settings.is_trial_disabled_for_user(getattr(db_user, 'auth_type', 'telegram'))
+        and not db_user.is_trial_already_used()
+    )
+
+    if not limited_ok:
+        # Только безлимит-триал доступен — лимитные параметры (дни/трафик/сервер)
+        # тут не при чём, и лимитный текст (TRIAL_AVAILABLE) был бы неверным.
+        await callback.message.edit_text(
+            texts.t('TRIAL_OFFER_UNLIMITED_ONLY', '🚀 Доступен безлимитный пробный период на 1 день'),
+            reply_markup=get_trial_keyboard(db_user.language, user=db_user, limited_available=False),
+        )
         await callback.answer()
         return
 
@@ -730,7 +754,9 @@ async def show_trial_offer(callback: types.CallbackQuery, db_user: User, db: Asy
         price_line=price_line,
     )
 
-    await callback.message.edit_text(trial_text, reply_markup=get_trial_keyboard(db_user.language))
+    await callback.message.edit_text(
+        trial_text, reply_markup=get_trial_keyboard(db_user.language, user=db_user, limited_available=True)
+    )
     await callback.answer()
 
 
@@ -1175,6 +1201,132 @@ async def activate_trial(callback: types.CallbackQuery, db_user: User, db: Async
         await callback.message.edit_text(failure_text, reply_markup=get_back_keyboard(db_user.language))
         await callback.answer()
         return
+
+    await callback.answer()
+
+
+async def activate_unlimited_trial(callback: types.CallbackQuery, db_user: User, db: AsyncSession):
+    """Активация безлимит-триала (Artemida).
+
+    Зеркалит структуру ``activate_trial``: проверка ограничения, гейт
+    доступности, провижининг, успех/ошибка UI, уведомление админов. Вся
+    бизнес-логика (создание триальной подписки + провижининг у вендора +
+    откат при ошибке) — в ``unlimited_trial_service.activate_unlimited_trial``.
+
+    ``db_user.subscriptions`` уже загружен (eager) мидлварью авторизации
+    (``get_user_by_telegram_id`` использует ``selectinload``) — то же
+    предусловие, что у ``is_trial_already_used()`` парой строк выше в
+    ``activate_trial``, поэтому дополнительный ``refresh`` перед гейтом не нужен.
+    """
+    from app.external.artemida_api import ArtemidaAPIError
+    from app.services import unlimited_trial_service
+
+    texts = get_texts(db_user.language)
+
+    # Проверка ограничения на покупку/продление подписки
+    if getattr(db_user, 'restriction_subscription', False):
+        reason = html.escape(getattr(db_user, 'restriction_reason', None) or 'Действие ограничено администратором')
+        support_url = settings.get_support_contact_url()
+        keyboard = []
+        if support_url:
+            keyboard.append([types.InlineKeyboardButton(text='🆘 Обжаловать', url=support_url)])
+        keyboard.append([types.InlineKeyboardButton(text=texts.BACK, callback_data='subscription')])
+
+        await callback.message.edit_text(
+            f'🚫 <b>Активация подписки ограничена</b>\n\n{reason}\n\n'
+            'Если вы считаете это ошибкой, вы можете обжаловать решение.',
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+        )
+        await callback.answer()
+        return
+
+    if not unlimited_trial_service.unlimited_trial_available(db_user):
+        await callback.message.edit_text(
+            texts.t('UNLIMITED_TRIAL_UNAVAILABLE', '🚀 Безлимитный пробный период недоступен'),
+            reply_markup=get_back_keyboard(db_user.language),
+        )
+        await callback.answer()
+        return
+
+    try:
+        subscription = await unlimited_trial_service.activate_unlimited_trial(db, db_user, bot=callback.bot)
+    except (
+        unlimited_trial_service.UnlimitedTrialNotEligible,
+        unlimited_trial_service.UnlimitedTrialUnavailable,
+    ) as error:
+        logger.warning('Безлимит-триал недоступен на момент активации', error=error, db_user_id=db_user.id)
+        await callback.message.edit_text(
+            texts.t('UNLIMITED_TRIAL_UNAVAILABLE', '🚀 Безлимитный пробный период недоступен'),
+            reply_markup=get_back_keyboard(db_user.language),
+        )
+        await callback.answer()
+        return
+    except unlimited_trial_service.UnlimitedTrialActivationError as error:
+        logger.critical(
+            'Не удалось откатить безлимит-триал после ошибки активации',
+            error=error,
+            db_user_id=db_user.id,
+        )
+        await callback.message.edit_text(
+            texts.t(
+                'TRIAL_ROLLBACK_FAILED',
+                'Не удалось отменить активацию триала. Попробуйте позже.',
+            ),
+            reply_markup=get_back_keyboard(db_user.language),
+        )
+        await callback.answer()
+        return
+    except ArtemidaAPIError as error:
+        logger.error('Вендор отказал в активации безлимит-триала', error=error, db_user_id=db_user.id)
+        await callback.message.edit_text(
+            texts.t(
+                'TRIAL_PROVISIONING_FAILED',
+                'Не удалось завершить активацию триала. Попробуйте позже.',
+            ),
+            reply_markup=get_back_keyboard(db_user.language),
+        )
+        await callback.answer()
+        return
+    except Exception as error:
+        logger.error('Неожиданная ошибка активации безлимит-триала', error=error, db_user_id=db_user.id)
+        await callback.message.edit_text(texts.ERROR, reply_markup=get_back_keyboard(db_user.language))
+        await callback.answer()
+        return
+
+    await db.refresh(db_user)
+
+    try:
+        notification_service = AdminNotificationService(callback.bot)
+        await notification_service.send_trial_activation_notification(
+            db,
+            db_user,
+            subscription,
+        )
+    except Exception as e:
+        logger.error('Ошибка отправки уведомления о безлимит-триале', error=e)
+
+    subscription_link = get_display_subscription_link(subscription)
+
+    if subscription_link:
+        _happ_redirect = get_happ_cryptolink_redirect_link(subscription_link)
+        connect_keyboard = get_connect_steps_kb(texts, subscription_link, _happ_redirect)
+
+        await callback.message.edit_text(
+            CONNECT_STEPS_TEXT,
+            reply_markup=connect_keyboard,
+            parse_mode='HTML',
+        )
+    else:
+        trial_success_text = (
+            f'{texts.TRIAL_ACTIVATED}\n\n⚠️ Ссылка генерируется, попробуйте перейти в раздел '
+            "'Моя подписка' через несколько секунд."
+        )
+        await callback.message.edit_text(
+            trial_success_text,
+            reply_markup=get_back_keyboard(db_user.language),
+        )
+
+    logger.info('✅ Активирован безлимит-триал для пользователя', telegram_id=db_user.telegram_id)
 
     await callback.answer()
 
@@ -3745,6 +3897,8 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(show_trial_offer, F.data == 'menu_trial')
 
     dp.callback_query.register(activate_trial, F.data == 'trial_activate')
+
+    dp.callback_query.register(activate_unlimited_trial, F.data == 'activate_unlimited_trial')
 
     # Хендлеры платного триала
     dp.callback_query.register(handle_trial_pay_with_balance, F.data == 'trial_pay_with_balance')

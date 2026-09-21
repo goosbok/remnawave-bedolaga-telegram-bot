@@ -123,6 +123,21 @@ async def delete_subscription_record(
         except Exception as error:
             logger.warning('Failed to delete RemnaWave user on subscription delete', error=error)
 
+    # Внешний вендор (Artemida): ключ живёт и тарифицируется у него, а не в панели,
+    # поэтому при настоящем удалении подписки его надо освободить — иначе владелец
+    # продолжает платить за осиротевший ключ. remnawave-подписок это не касается
+    # (там нет вендорного ключа), а сам вызов — best-effort, ровно как панельный
+    # выше: сбой (в т.ч. 404 на триальном ключе, который у вендора отозвать нельзя)
+    # не должен блокировать локальное удаление. revoke_external транзакцией не
+    # управляет — финальный commit ниже принадлежит этому потоку.
+    if subscription.is_external_vendor:
+        try:
+            from app.services.subscription_service import SubscriptionService
+
+            await SubscriptionService().revoke_external(db, subscription)
+        except Exception as error:
+            logger.warning('Failed to revoke external vendor key on subscription delete', error=error)
+
     await decrement_subscription_server_counts(db, subscription)
 
     subscription_id = subscription.id

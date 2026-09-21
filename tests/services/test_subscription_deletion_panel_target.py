@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -341,6 +342,141 @@ async def test_step_order_is_pinned(monkeypatch):
         await deletion.delete_subscription_record(db, target, deleted_by='user')
 
     assert spy.order == ['grace', 'platega', 'lava', 'grace', 'panel_delete', 'decrement']
+
+
+class _RevokeSpy:
+    """Records vendor-key revokes routed through SubscriptionService.revoke_external.
+
+    Fakes the provider resolution the way the real resolver behaves: an
+    external-vendor subscription resolves to a provider, a remnawave / unprovisioned
+    one resolves to None. ``raises`` makes the vendor revoke blow up (e.g. the 404 a
+    trial key returns) so we can prove the deletion seam swallows it.
+    """
+
+    def __init__(self) -> None:
+        self.revoked: list[int] = []
+
+    def install(self, monkeypatch, *, raises: Exception | None = None) -> None:
+        from app.services.subscription_service import SubscriptionService
+
+        spy = self
+
+        async def fake_revoke(*, db, subscription):
+            spy.revoked.append(subscription.id)
+            if raises is not None:
+                raise raises
+
+        provider = SimpleNamespace(name='artemida', revoke=fake_revoke)
+
+        async def fake_resolve(_self, db, subscription):
+            name = getattr(subscription, 'external_provider', None)
+            if name and name != 'remnawave':
+                return provider
+            return None
+
+        monkeypatch.setattr(SubscriptionService, '_external_provider_or_none', fake_resolve)
+
+
+def _external_sub(sub_id: int, *, provider: str) -> Subscription:
+    now = datetime.now(UTC)
+    return Subscription(
+        id=sub_id,
+        user_id=10,
+        status=SubscriptionStatus.ACTIVE.value,
+        is_trial=False,
+        # External-vendor subs never carry a panel id.
+        remnawave_id=None,
+        remnawave_short_id=f'short{sub_id}',
+        external_provider=provider,
+        external_ref=f'key_{sub_id}',
+        start_date=now - timedelta(days=30),
+        end_date=now + timedelta(days=30),
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_vendor_deletion_revokes_the_vendor_key(monkeypatch):
+    """Удаление вендорной (Artemida) подписки освобождает ключ у вендора.
+
+    Иначе владелец продолжает платить за осиротевший ключ. Панель тут ни при чём —
+    вендорная подписка панельного аккаунта не имеет (``remnawave_id`` пуст).
+    """
+    monkeypatch.setattr(type(settings), 'is_multi_tariff_enabled', lambda self: True)
+    panel = _PanelSpy()
+    panel.install(monkeypatch)
+    revoke = _RevokeSpy()
+    revoke.install(monkeypatch)
+
+    async with memory_session(monkeypatch, TABLES) as db:
+        db.add(_user(remnawave_id=None))
+        target = _external_sub(1, provider='artemida')
+        db.add(target)
+        await db.commit()
+
+        await deletion.delete_subscription_record(db, target, deleted_by='admin:1')
+
+        remaining = await db.scalar(select(Subscription.id).where(Subscription.id == 1))
+
+    assert revoke.revoked == [1]
+    # Вендорная подписка панель не трогает.
+    assert panel.deleted == []
+    assert panel.disabled == []
+    assert remaining is None
+
+
+@pytest.mark.asyncio
+async def test_remnawave_deletion_does_not_revoke_any_vendor(monkeypatch):
+    """remnawave-подписка вендорного ключа не имеет — revoke_external не зовётся."""
+    monkeypatch.setattr(type(settings), 'is_multi_tariff_enabled', lambda self: True)
+    panel = _PanelSpy()
+    panel.install(monkeypatch)
+    revoke = _RevokeSpy()
+    revoke.install(monkeypatch)
+
+    async with memory_session(monkeypatch, TABLES) as db:
+        db.add(_user(remnawave_id=None))
+        target = _sub(1, status=SubscriptionStatus.EXPIRED.value, remnawave_id=PANEL_ID)
+        db.add(target)
+        await db.commit()
+
+        await deletion.delete_subscription_record(db, target, deleted_by='user')
+
+        remaining = await db.scalar(select(Subscription.id).where(Subscription.id == 1))
+
+    assert revoke.revoked == []
+    # Существующий панельный путь не изменился.
+    assert panel.deleted == [PANEL_ID]
+    assert remaining is None
+
+
+@pytest.mark.asyncio
+async def test_external_vendor_revoke_failure_does_not_block_deletion(monkeypatch):
+    """Сбой вендорного revoke (в т.ч. 404 на триальном ключе) не мешает удалению.
+
+    Освобождение ключа — best-effort, ровно как панельные вызовы рядом: локальную
+    строку удаляем всё равно, иначе вендорная икота держала бы подписку вечно.
+    """
+    from app.external.artemida_api import ArtemidaAPIError
+
+    monkeypatch.setattr(type(settings), 'is_multi_tariff_enabled', lambda self: True)
+    panel = _PanelSpy()
+    panel.install(monkeypatch)
+    revoke = _RevokeSpy()
+    revoke.install(monkeypatch, raises=ArtemidaAPIError('key not found', status=404))
+
+    async with memory_session(monkeypatch, TABLES) as db:
+        db.add(_user(remnawave_id=None))
+        target = _external_sub(1, provider='artemida')
+        db.add(target)
+        await db.commit()
+
+        await deletion.delete_subscription_record(db, target, deleted_by='admin:1')
+
+        remaining = await db.scalar(select(Subscription.id).where(Subscription.id == 1))
+
+    # Revoke was attempted, blew up, and the local deletion still went through.
+    assert revoke.revoked == [1]
+    assert remaining is None
 
 
 @pytest.mark.asyncio

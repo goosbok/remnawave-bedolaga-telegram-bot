@@ -118,6 +118,30 @@ async def test_create_paid_subscription_falls_to_insert_when_conversion_raced(mo
         assert str(e) == 'reached create'  # дошли до вставки
 
 
+async def test_create_paid_subscription_skips_conversion_when_disabled(monkeypatch):
+    """``convert_alive_trial=False``: живой триал НЕ конвертируется, а вставляется
+    ОТДЕЛЬНАЯ подписка. Так кабинетная мульти-тариф покупка добавляет платную
+    подписку рядом с пробниками, не «съедая» их (#1 two-trials)."""
+    monkeypatch.setattr(type(sub_crud.settings), 'is_multi_tariff_enabled', lambda self: True)
+    trial = _sub(id=11, user_id=7, tariff_id=6, is_trial=True, status=SubscriptionStatus.ACTIVE.value)
+    monkeypatch.setattr(sub_crud, 'get_subscription_by_user_and_tariff', AsyncMock(return_value=None))
+    helper = AsyncMock(return_value=trial)
+    monkeypatch.setattr(sub_crud, 'get_alive_trial_subscription', helper)
+    convert = AsyncMock(return_value=trial)
+    monkeypatch.setattr(sub_crud, '_convert_trial_subscription_to_paid', convert)
+    monkeypatch.setattr(sub_crud, 'generate_unique_short_id', AsyncMock(side_effect=RuntimeError('reached create')))
+    db = _db()
+
+    try:
+        await sub_crud.create_paid_subscription(
+            db, user_id=7, duration_days=30, traffic_limit_gb=100, tariff_id=1, convert_alive_trial=False
+        )
+    except RuntimeError as e:
+        assert str(e) == 'reached create'  # дошли до вставки, минуя конверсию
+
+    convert.assert_not_awaited()  # конверсию не вызывали — триал остаётся жить
+
+
 async def test_create_paid_subscription_without_trial_falls_to_insert(monkeypatch):
     """Нет живого триала — обычная вставка новой подписки, как раньше."""
     monkeypatch.setattr(type(sub_crud.settings), 'is_multi_tariff_enabled', lambda self: True)
@@ -300,25 +324,26 @@ async def test_resolver_falls_back_to_freshest_alive_trial(monkeypatch):
 # --- Source-pin кабинетного пути ---
 
 
-def test_cabinet_purchase_excludes_conversion_candidate_from_trial_kill():
-    """Source-pin (в духе test_purchase_tariff_expired_trial_reuse): кабинетный
-    ``purchase_tariff`` обязан резолвить кандидата через
-    resolve_trial_conversion_candidate, исключать его из раннего
-    deactivate_user_trial_subscriptions и передавать в create_paid_subscription
-    — иначе триал будет заглушен ДО create_paid_subscription и конверсия не
-    увидит его (регресс к «новый панельный юзер + мёртвый триал в кабинете»)."""
+def test_cabinet_purchase_keeps_trials_when_buying_new_tariff_multi_tariff():
+    """Source-pin: покупка НОВОГО тарифа в мульти-тарифе ДОБАВЛЯЕТ отдельную
+    подписку и НЕ трогает пробники — ни конвертации, ни гашения, ни переноса дней
+    (решение владельца, #1 из разбора two-trials). Значит кабинетный
+    ``purchase_tariff`` больше НЕ резолвит кандидата конверсии, а в мульти-тариф
+    create-ветке пробники не деактивируются (``killed_trials = []``). Обратная
+    ветка (одно-тарифный режим / продление своей подписки) по-прежнему гасит
+    триалы — её этот пин не запрещает."""
     from pathlib import Path
 
     source = (
         Path(__file__).resolve().parents[2] / 'app' / 'cabinet' / 'routes' / 'subscription_modules' / 'purchase.py'
     ).read_text(encoding='utf-8')
 
-    assert 'resolve_trial_conversion_candidate' in source, (
-        'cabinet purchase.py больше не резолвит кандидата конверсии триала — '
-        'ранний deactivate_user_trial_subscriptions заглушит живой триал до '
-        'create_paid_subscription, и конверсия на месте не сработает'
+    assert 'resolve_trial_conversion_candidate' not in source, (
+        'cabinet purchase.py снова конвертирует триал при покупке — по решению '
+        'владельца покупка НОВОГО тарифа должна создавать ОТДЕЛЬНУЮ подписку и '
+        'оставлять пробники нетронутыми'
     )
-    assert 'conversion_trial=_conversion_trial' in source, (
-        'пре-резолвленный кандидат должен передаваться в create_paid_subscription, '
-        'чтобы кабинет и CRUD гарантированно работали с ОДНОЙ и той же строкой триала'
+    assert 'killed_trials = []' in source, (
+        'в мульти-тариф create-ветке (покупка нового тарифа) пробники не должны '
+        'гаситься: killed_trials = [] — они продолжают идти рядом с платной подпиской'
     )

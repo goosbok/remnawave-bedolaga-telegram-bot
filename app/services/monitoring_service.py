@@ -1518,6 +1518,21 @@ class MonitoringService:
                     if subscription is None:
                         continue
 
+                    # Go-live guard: autopay is disabled for external-vendor subs (e.g.
+                    # Artemida) until the paid vendor renewal is verified live. A run
+                    # would charge the balance in the background and then renew the vendor
+                    # key; this background loop does not compensate (refund+revert) on a
+                    # vendor error, so we skip these subs before charging/extending. Not a
+                    # failure — treated like the loop's other ineligible/skip continues.
+                    if subscription.is_external_vendor:
+                        logger.info(
+                            'Пропуск автоплатежа: внешний вендор (автоплатёж отключён '
+                            'до проверки платного продления у вендора)',
+                            subscription_id=subscription.id,
+                            user_id=subscription.user_id,
+                        )
+                        continue
+
                     from app.database.crud.subscription import is_recently_updated_by_webhook
 
                     if is_recently_updated_by_webhook(subscription):
@@ -1678,12 +1693,19 @@ class MonitoringService:
                             # Синк панели — лучшее-усилие: продление уже в БД, при сбое не возвращаем,
                             # а полагаемся на очередь повтора синка.
                             try:
-                                await self.subscription_service.update_remnawave_user(
-                                    db,
-                                    subscription,
-                                    reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
-                                    reset_reason='автопродление подписки',
-                                )
+                                # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ
+                                # вызовом у вендора (идемпотентный ключ на пост-extend
+                                # end_date). Для remnawave renew_external возвращает False —
+                                # тогда отрабатывает прежний синк панели без изменений.
+                                if not await self.subscription_service.renew_external(
+                                    db, subscription, period_days=autopay_period
+                                ):
+                                    await self.subscription_service.update_remnawave_user(
+                                        db,
+                                        subscription,
+                                        reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT,
+                                        reset_reason='автопродление подписки',
+                                    )
                             except Exception as sync_exc:
                                 logger.error(
                                     'Автопродление: ошибка синка RemnaWave (продление уже применено в БД)',

@@ -37,6 +37,25 @@ async def get_available_countries(
 
     subscription = await resolve_subscription(db, user, subscription_id)
 
+    # External-vendor subs (e.g. Artemida) are provisioned off our Remnawave panel:
+    # their real locations live in the vendor's rebranded config, NOT in our local
+    # server_squads. Never enumerate our squads as this sub's "countries" — that
+    # would let the client pay to connect a squad that does nothing for the vendor
+    # key. The frontend hides the location section on location_management_available.
+    if subscription is not None and subscription.is_external_vendor:
+        days_left = 0
+        if subscription.end_date:
+            delta = subscription.end_date - datetime.now(UTC)
+            days_left = max(0, delta.days)
+        return {
+            'countries': [],
+            'connected_count': 0,
+            'has_subscription': True,
+            'days_left': days_left,
+            'discount_percent': 0,
+            'location_management_available': False,
+        }
+
     promo_group_id = user.promo_group_id
     available_servers = await get_available_server_squads(db, promo_group_id=promo_group_id)
 
@@ -93,6 +112,7 @@ async def get_available_countries(
         'has_subscription': subscription is not None,
         'days_left': days_left,
         'discount_percent': servers_discount_percent,
+        'location_management_available': True,
     }
 
 
@@ -117,6 +137,16 @@ async def update_countries(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='No subscription found',
+        )
+
+    # External-vendor subs (e.g. Artemida) are provisioned off our Remnawave panel:
+    # connecting/paying for our local squads does nothing for the vendor key. Reject
+    # before any balance charge or squad mutation. (Placed ahead of the is_trial
+    # check so vendor subs get this clearer message regardless of trial status.)
+    if subscription.is_external_vendor:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Location management is not available for this tariff',
         )
 
     if subscription.is_trial:

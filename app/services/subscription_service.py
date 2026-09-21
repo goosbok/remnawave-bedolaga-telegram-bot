@@ -11,6 +11,7 @@ from app.config import settings
 from app.database.crud.server_squad import get_all_server_squads
 from app.database.crud.user import get_user_by_id
 from app.database.models import Subscription, SubscriptionStatus, User
+from app.external.artemida_api import ArtemidaAPIError
 from app.external.remnawave_api import (
     RemnaWaveAPI,
     RemnaWaveAPIError,
@@ -25,12 +26,63 @@ from app.services.panel_sync import (
     patch_panel_account,
     push_subscription,
 )
+from app.services.providers import get_provider_by_name
 from app.utils.subscription_utils import (
     resolve_hwid_device_limit_for_payload,
 )
 
 
 logger = structlog.get_logger(__name__)
+
+
+def _provision_days(subscription) -> int:
+    """Полный неизменный срок подписки для вызова вендора.
+
+    Раньше считалось от «сейчас» (end_date - now()), но это значение УМЕНЬШАЕТСЯ
+    по мере ожидания — ретрай провижининга (например, из remnawave_retry_queue)
+    пересчитал бы days меньшим числом и отправил бы вендору ДРУГОЕ тело запроса
+    под ТЕМ ЖЕ идемпотентным ключом чанка → вендорский 409 idempotency_conflict →
+    ретрай зависает навсегда. start_date и end_date оба фиксируются при создании
+    подписки, поэтому их разница — единственное стабильное при повторных попытках
+    значение полного срока (именно его и нужно провижинить у вендора).
+    """
+    end = subscription.end_date
+    # getattr, not a plain attribute access: some call sites exercise this against
+    # lightweight test doubles that only set end_date, and end_date is already None
+    # for those (short-circuiting the check below) — but a plain `.start_date` would
+    # still raise AttributeError before that check ever runs.
+    start = getattr(subscription, 'start_date', None)
+    if end is None or start is None:
+        return 0
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    return max(1, (end - start).days)
+
+
+class _ArtemidaProvisionResult:
+    """Truthy success marker for artemida provisioning (no Remnawave panel user).
+
+    create/update_remnawave_user return None only on FAILURE; callers do
+    `if not rem_user: raise` / `if result is None: requeue`. Artemida has no
+    RemnaWaveUser, so we return a truthy stand-in exposing the few attributes
+    callers read; any other attribute resolves to None so an untested caller
+    path degrades safely instead of AttributeError-ing on a paid success.
+    """
+
+    def __init__(self, subscription):
+        self.subscription_url = subscription.subscription_url
+        self.short_uuid = subscription.external_ref
+        self.subscription_crypto_link = None
+        self.happ_crypto_link = None
+        self.id = None
+
+    def __bool__(self):
+        return True
+
+    def __getattr__(self, name):
+        return None
 
 
 def get_traffic_reset_strategy(tariff=None):
@@ -208,6 +260,60 @@ class SubscriptionService:
         async with self.api as api:
             yield api
 
+    async def _external_provider_or_none(self, db: AsyncSession, subscription: Subscription):
+        """Возвращает провайдера, обслуживающего подписку у её ТЕКУЩЕГО вендора (иначе None).
+
+        Хот-путь: вызывается на КАЖДОЙ подписке, включая remnawave — основной объём
+        вызовов. Диспатч идёт по `subscription.external_provider` — тому вендору,
+        который ФАКТИЧЕСКИ держит подписку сейчас, а не по дефолту из тарифа: после
+        ручного свопа (см. `provider_swap_service`) они расходятся, и резолвинг по
+        тарифу отправил бы update/sync/renew СТАРОМУ вендору. Тариф как дефолт
+        используется только для ещё не провижиненной подписки (`external_provider`
+        пуст) — там ещё нет своего вендора, и решение принимается по тарифу, как раньше.
+        """
+        name = getattr(subscription, 'external_provider', None)
+        if not name:
+            # Ещё не провижинена ни у одного вендора — берём дефолт из тарифа. Если
+            # связь `tariff` уже подгружена — читаем без запроса; иначе тащим только
+            # колонку `provider` скаляром (не весь объект тарифа).
+            tariff_id = getattr(subscription, 'tariff_id', None)
+            if tariff_id is None:
+                return None
+            from sqlalchemy import inspect as sa_inspect
+
+            from app.database.models import Tariff
+
+            loaded_tariff = None
+            try:
+                if 'tariff' not in sa_inspect(subscription).unloaded:
+                    loaded_tariff = subscription.tariff
+            except Exception:
+                loaded_tariff = None
+
+            if loaded_tariff is not None:
+                name = getattr(loaded_tariff, 'provider', 'remnawave')
+            else:
+                name = await db.scalar(select(Tariff.provider).where(Tariff.id == tariff_id))
+
+        if not name or name == 'remnawave':
+            return None
+
+        provider = get_provider_by_name(name)
+        if provider is None or provider.name == 'remnawave':
+            return None
+
+        if not settings.ARTEMIDA_ENABLED:
+            raise ArtemidaAPIError('Внешний провайдер запрошен, но ARTEMIDA_ENABLED=false')
+
+        try:
+            # provision()/update() читают subscription.tariff.device_limit — гарантируем
+            # загрузку связи.
+            await db.refresh(subscription, ['tariff'])
+        except Exception:
+            pass
+
+        return provider
+
     async def sync_remnawave_user(
         self,
         db: AsyncSession,
@@ -224,6 +330,18 @@ class SubscriptionService:
         (награда за реферала, купон, покупка) id ещё не имеет, и update для неё падал с
         «RemnaWave id не найден»: человек оставался без пользователя в панели и без ссылки.
         """
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is not None:
+            # Artemida не имеет remnawave_id — решаем create-vs-update по external_ref:
+            # уже выданный ключ синкуем (update→sync_usage), новый провижиним (create→provision).
+            if subscription.external_ref:
+                return await self.update_remnawave_user(
+                    db, subscription, reset_traffic=reset_traffic, reset_reason=reset_reason
+                )
+            return await self.create_remnawave_user(
+                db, subscription, reset_traffic=reset_traffic, reset_reason=reset_reason
+            )
+
         panel_id = subscription.remnawave_id
         if not settings.is_multi_tariff_enabled():
             user = await get_user_by_id(db, subscription.user_id)
@@ -244,6 +362,16 @@ class SubscriptionService:
         reset_traffic: bool = False,
         reset_reason: str | None = None,
     ) -> RemnaWaveUser | None:
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is not None:
+            # Artemida-тариф: провижинится у вендора, не в панели. create/update
+            # исторически возвращают None только при ОШИБКЕ (вызывающий код делает
+            # `if not rem_user: raise` / `if result is None: requeue`) — при успехе
+            # отдаём truthy-заглушку, а не None.
+            await provider.provision(db=db, subscription=subscription, days=_provision_days(subscription))
+            await db.commit()
+            return _ArtemidaProvisionResult(subscription)
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
@@ -563,6 +691,56 @@ class SubscriptionService:
             reset_reason=reset_reason,
         )
 
+    async def renew_external(self, db: AsyncSession, subscription: Subscription, *, period_days: int) -> bool:
+        """Push a PAID renewal of an externally-provisioned subscription to its vendor.
+
+        Returns True when the subscription is served by an external provider and the
+        vendor renew was issued (and committed); False for a remnawave / unprovisioned
+        subscription, in which case the caller keeps its existing panel-sync behavior.
+
+        This closes the paid-renewal gap: after the caller charges the balance and
+        `extend_subscription(...)` moves `subscription.end_date` out in the local DB,
+        the generic `create/update_remnawave_user` seams route an external sub to
+        `provision` (stable idempotency key -> cached original key) or `sync_usage`
+        (free refresh) — neither extends the vendor key, so the paying client loses
+        access. `provider.update(days=...)` is the only seam that issues a real paid
+        renew. Retry-stability is the provider's concern: its idempotency key is keyed
+        on the post-extend `end_date`, so re-running this is safe.
+        """
+        # Nothing to renew — keep the caller's existing behavior, never touch the vendor.
+        if period_days is None or period_days <= 0:
+            return False
+
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is None:
+            return False
+
+        await provider.update(db=db, subscription=subscription, days=period_days)
+        await db.commit()
+        return True
+
+    async def revoke_external(self, db: AsyncSession, subscription: Subscription) -> bool:
+        """Release the vendor key of an externally-provisioned subscription on cancellation.
+
+        Returns True when the subscription is served by an external provider and the
+        vendor key was released (``provider.revoke``); False for a remnawave /
+        unprovisioned subscription, in which case the caller keeps its existing panel
+        behavior.
+
+        On genuine deletion the vendor key must be released or the owner keeps paying
+        for an orphaned key. Unlike ``renew_external`` this does NOT commit: deletion
+        flows own their transaction (see ``subscription_deletion_service``), and a
+        revoke touches no local row. ``provider.revoke`` is idempotent and best-effort
+        by design — a vendor TRIAL key answers the vendor DELETE with 404 (trials can't
+        be revoked), so the deletion seam calls this as a log-and-continue step.
+        """
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is None:
+            return False
+
+        await provider.revoke(db=db, subscription=subscription)
+        return True
+
     async def update_remnawave_user(
         self,
         db: AsyncSession,
@@ -572,6 +750,14 @@ class SubscriptionService:
         reset_reason: str | None = None,
         sync_squads: bool = True,
     ) -> RemnaWaveUser | None:
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is not None:
+            # Generic-обновление для artemida = безбилетный refresh состояния, НЕ платный
+            # renew. None означало бы ошибку вызывающему коду — возвращаем truthy-заглушку.
+            await provider.sync_usage(db=db, subscription=subscription)
+            await db.commit()
+            return _ArtemidaProvisionResult(subscription)
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
@@ -954,6 +1140,20 @@ class SubscriptionService:
             return None
 
     async def revoke_subscription(self, db: AsyncSession, subscription: Subscription) -> str | None:
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is not None:
+            # remnawave-семантика этого метода — РОТАЦИЯ ссылки/паролей для активного
+            # клиента (кнопки «перевыпустить ссылку», не отмена). У Artemida нет
+            # примитива ротации — только create/revoke ключа целиком, и вызов
+            # provider.revoke() тут удалил бы ключ ПЛАТЯЩЕГО клиента. NO-OP: логируем
+            # и возвращаем неизменную ссылку, чтобы UI отчитался успехом, а не ошибкой.
+            # provider.revoke() зарезервирован для настоящей отмены в другой задаче.
+            logger.warning(
+                'Перевыпуск ссылки не поддерживается для artemida-тарифа',
+                subscription_id=subscription.id,
+            )
+            return subscription.subscription_url
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:
@@ -998,6 +1198,12 @@ class SubscriptionService:
             return None
 
     async def sync_subscription_usage(self, db: AsyncSession, subscription: Subscription) -> bool:
+        provider = await self._external_provider_or_none(db, subscription)
+        if provider is not None:
+            await provider.sync_usage(db=db, subscription=subscription)
+            await db.commit()
+            return True
+
         try:
             user = await get_user_by_id(db, subscription.user_id)
             if not user:

@@ -321,6 +321,17 @@ class AdvertisingCampaignService:
             squads = list(campaign.subscription_squads or [])
 
         if existing_subscription:
+            if existing_subscription.is_external_vendor:
+                # Внешний вендор (Artemida): extend_subscription двинул бы локальный
+                # end_date, не продлив ключ у вендора. Бонус пропускаем как «не
+                # применён» — тем же исходом, что и остальные ветки отказа выше.
+                logger.warning(
+                    'Бонус кампании (дни) пропущен: подписка обслуживается внешним вендором',
+                    subscription_id=existing_subscription.id,
+                    campaign_id=campaign.id,
+                    program='campaign_subscription_bonus',
+                )
+                return CampaignBonusResult(success=False)
             # Multi-tariff: extend the best existing subscription
             from app.database.crud.subscription import extend_subscription
 
@@ -465,6 +476,16 @@ class AdvertisingCampaignService:
             squads = list(tariff.allowed_squads or [])
 
         if existing_subscription:
+            if existing_subscription.is_external_vendor:
+                # Внешний вендор (Artemida): продлевать локально, не тронув ключ у
+                # вендора, — молча лишить клиента доступа. Пропускаем как «не применён».
+                logger.warning(
+                    'Бонус кампании (тариф) пропущен: подписка обслуживается внешним вендором',
+                    subscription_id=existing_subscription.id,
+                    campaign_id=campaign.id,
+                    program='campaign_tariff_bonus',
+                )
+                return CampaignBonusResult(success=False)
             # Multi-tariff: extend the existing subscription for this tariff
             from app.database.crud.subscription import extend_subscription
 

@@ -704,11 +704,16 @@ def get_main_menu_keyboard(
 
     keyboard.append([InlineKeyboardButton(text=balance_button_text, callback_data='menu_balance')])
 
+    # Фиче-левел гейт (без пользовательской проверки — её делает сам экран триала):
+    # показываем вход в "Триал", если предлагается ЛЮБОЙ из двух триалов —
+    # лимитный (TRIAL_DURATION_DAYS) или безлимитный (Artemida).
     show_trial = (
         not has_had_paid_subscription
         and not has_active_subscription
-        and settings.TRIAL_DURATION_DAYS > 0
-        and settings.TRIAL_DISABLED_FOR != 'all'
+        and (
+            (settings.TRIAL_DURATION_DAYS > 0 and settings.TRIAL_DISABLED_FOR != 'all')
+            or (settings.ARTEMIDA_ENABLED and settings.ARTEMIDA_TRIAL_ENABLED)
+        )
     )
 
     show_buy = not has_active_subscription or not subscription_is_active
@@ -1400,18 +1405,46 @@ def get_insufficient_balance_keyboard_with_cart(
     return keyboard
 
 
-def get_trial_keyboard(language: str = 'ru') -> InlineKeyboardMarkup:
+def get_trial_keyboard(
+    language: str = 'ru', user: User | None = None, limited_available: bool = True
+) -> InlineKeyboardMarkup:
+    """Клавиатура экрана предложения триала.
+
+    ``limited_available`` управляет ЛИШЬ видимостью лимитного "🎁 Активировать" —
+    по умолчанию True, то есть поведение для всех прежних вызовов не меняется.
+    Безлимит-кнопка (Artemida) — своим гейтом ``unlimited_trial_available(user)``,
+    независимо от лимитного. BACK показывается всегда, даже когда лимитный
+    триал недоступен и остаётся только безлимитная кнопка.
+    """
     texts = get_texts(language)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    if user is not None:
+        from app.services.unlimited_trial_service import unlimited_trial_available
+
+        if unlimited_trial_available(user):
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=texts.t('UNLIMITED_TRIAL_ACTIVATE_BUTTON', '🚀 Безлимит · 1 день'),
+                        callback_data='activate_unlimited_trial',
+                    )
+                ]
+            )
+
+    if limited_available:
+        keyboard.append(
             [
                 InlineKeyboardButton(
                     text=texts.t('TRIAL_ACTIVATE_BUTTON', '🎁 Активировать'), callback_data='trial_activate'
                 ),
                 InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu'),
             ]
-        ]
-    )
+        )
+    else:
+        keyboard.append([InlineKeyboardButton(text=texts.BACK, callback_data='back_to_menu')])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_subscription_period_keyboard(

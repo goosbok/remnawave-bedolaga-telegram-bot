@@ -54,6 +54,8 @@ def _subscription(**overrides) -> SimpleNamespace:
         traffic_limit_gb=100,
         status=SubscriptionStatus.ACTIVE.value,
         remnawave_id=None,
+        # remnawave-подписка: гард внешнего вендора её не трогает.
+        is_external_vendor=False,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

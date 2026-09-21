@@ -583,6 +583,7 @@ async def create_paid_subscription(
     tariff_id: int | None = None,
     commit: bool = True,
     conversion_trial: Subscription | None = None,
+    convert_alive_trial: bool = True,
 ) -> Subscription:
     # Multi-tariff invariant: at most ONE subscription per (user, tariff). If a
     # subscription for this tariff has EXPIRED, revive it in place instead of
@@ -611,32 +612,31 @@ async def create_paid_subscription(
 
         # Paid purchase while an alive (active/trial/limited) TRIAL exists —
         # usually of a DIFFERENT tariff: convert that trial row in place instead
-        # of inserting a new subscription. Otherwise the user gets a brand-new
-        # Remnawave user/link while the killed trial keeps hanging in the
-        # cabinet (prod report 2026-07: триал → покупка тарифа → «две подписки»,
-        # см. скрин #disabled + #created). Mirrors the classic-mode purchase,
-        # which has always converted the trial in place. ``conversion_trial``
-        # lets callers that pre-resolved the candidate (cabinet, via
-        # ``resolve_trial_conversion_candidate``) pass it through instead of a
-        # second lookup; the selection rule is shared either way.
-        _alive_trial = conversion_trial
-        if _alive_trial is None:
-            _alive_trial = await _alive_trial_conversion_candidate(db, user_id, _existing)
-        if _alive_trial is not None:
-            _converted = await _convert_trial_subscription_to_paid(
-                db,
-                _alive_trial,
-                tariff_id=tariff_id,
-                duration_days=duration_days,
-                traffic_limit_gb=traffic_limit_gb,
-                device_limit=device_limit,
-                connected_squads=connected_squads,
-                commit=commit,
-            )
-            if _converted is not None:
-                return _converted
-            # Гонка: кандидат уже конвертирован конкурентной покупкой — падаем
-            # в обычную вставку (две платные подписки, как до фикса).
+        # of inserting a new subscription (prod report 2026-07: триал → покупка
+        # тарифа → «две подписки»). ``conversion_trial`` lets callers pre-resolve
+        # the candidate. Callers that want a SEPARATE subscription while leaving
+        # the trials running pass ``convert_alive_trial=False`` (cabinet
+        # multi-tariff purchase — решение владельца, #1 two-trials): then we skip
+        # the conversion and fall through to a fresh insert below.
+        if convert_alive_trial:
+            _alive_trial = conversion_trial
+            if _alive_trial is None:
+                _alive_trial = await _alive_trial_conversion_candidate(db, user_id, _existing)
+            if _alive_trial is not None:
+                _converted = await _convert_trial_subscription_to_paid(
+                    db,
+                    _alive_trial,
+                    tariff_id=tariff_id,
+                    duration_days=duration_days,
+                    traffic_limit_gb=traffic_limit_gb,
+                    device_limit=device_limit,
+                    connected_squads=connected_squads,
+                    commit=commit,
+                )
+                if _converted is not None:
+                    return _converted
+                # Гонка: кандидат уже конвертирован конкурентной покупкой — падаем
+                # в обычную вставку (две платные подписки, как до фикса).
 
     end_date = datetime.now(UTC) + timedelta(days=duration_days)
 
@@ -669,9 +669,12 @@ async def create_paid_subscription(
     else:
         await db.flush()
 
-    # Kill all trial subscriptions when creating a paid subscription
-    # Trial = probe, must die on any paid purchase (regardless of path: bot, cabinet, webhook)
-    if not is_trial:
+    # Trial = probe, must die on any paid purchase (bot, cabinet, webhook) — UNLESS
+    # the caller keeps the user's trials running alongside the new subscription
+    # (convert_alive_trial=False: cabinet multi-tariff purchase, #1 two-trials).
+    # In that mode we skip BOTH the in-place conversion (above) and this kill, so
+    # the purchase simply ADDS a separate subscription and leaves the trials alone.
+    if not is_trial and convert_alive_trial:
         try:
             killed = await deactivate_user_trial_subscriptions(db, user_id, exclude_subscription_id=subscription.id)
             if killed:

@@ -6,6 +6,7 @@ POST /subscription/purchase
 POST /subscription/purchase-tariff
 GET /subscription/trial
 POST /subscription/trial
+POST /subscription/trial/unlimited
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from app.database.crud.transaction import create_transaction
 from app.database.crud.user import add_user_balance, get_user_by_id, subtract_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import PaymentMethod, Subscription, Tariff, Transaction, TransactionType, User
+from app.services import unlimited_trial_service
 from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
@@ -988,39 +990,36 @@ async def purchase_tariff(
         # остаются снаружи guard'а: их сбой не должен возвращать деньги за уже
         # выданную подписку.
         try:
-            # --- Trial cleanup: find and kill all trials BEFORE creating/extending ---
+            # --- Trial handling before creating/extending the paid subscription ---
             from app.database.crud.subscription import deactivate_user_trial_subscriptions
 
             # Collect remaining trial seconds (перенос — по общему правилу:
             # TARIFF_SWITCH_RESET_FREE_DAYS перебивает TRIAL_ADD_REMAINING_DAYS_TO_PAID).
             _bonus_seconds = 0
             _now_trial = datetime.now(UTC)
-            # В мульти-тарифе create-ветка ниже (нет живой подписки покупаемого
-            # тарифа) НЕ должна глушить живой триал здесь: create_paid_subscription
-            # конвертирует его на месте (та же строка, тот же Remnawave-юзер и
-            # ссылка) вместо вставки новой подписки. Убив его заранее, мы бы
-            # спрятали кандидата от конверсии и вернули старое поведение — новый
-            # панельный юзер + мёртвый триал, висящий в кабинете. Его остаток
-            # дней переносит extend_subscription внутри конверсии, поэтому в
-            # _bonus_seconds кандидат не попадает — двойного начисления нет.
-            # resolve_trial_conversion_candidate повторяет приоритеты
-            # create_paid_subscription (в т.ч. вернёт None, когда сработает
-            # revive-ветка #3004) — тогда триал глушится по-старому: с переносом
-            # остатка и отключением панельного юзера в цикле ниже.
+            # Никогда не конвертируем триал в оплаченную подписку: покупка не
+            # переиспользует пробную строку/ключ (решение владельца — см. #1
+            # в разборе two-trials). Оставляем None, чтобы create_paid_subscription
+            # всегда делал СВЕЖУЮ подписку.
             _conversion_trial = None
             if subscription is None and settings.is_multi_tariff_enabled():
-                from app.database.crud.subscription import resolve_trial_conversion_candidate
-
-                _conversion_trial = await resolve_trial_conversion_candidate(db, user.id, tariff.id)
-            killed_trials = await deactivate_user_trial_subscriptions(
-                db,
-                user.id,
-                exclude_subscription_id=subscription.id if subscription else getattr(_conversion_trial, 'id', None),
-            )
-            if should_carry_trial_remaining_days():
-                for _kt in killed_trials:
-                    if _kt.end_date and _kt.end_date > _now_trial:
-                        _bonus_seconds += max(0, (_kt.end_date - _now_trial).total_seconds())
+                # Мульти-тариф + покупка НОВОГО тарифа: подписка ДОБАВЛЯЕТСЯ
+                # отдельно, а пробники НЕ трогаем — ни гашения, ни конвертации, ни
+                # переноса дней. Оба пробника продолжают идти рядом с платной
+                # подпиской (у неё свой Remnawave-юзер/ссылка).
+                killed_trials = []
+            else:
+                # Одно-тарифный режим или продление своей подписки: как раньше —
+                # гасим триалы и (по флагу) переносим их остаток дней в оплату.
+                killed_trials = await deactivate_user_trial_subscriptions(
+                    db,
+                    user.id,
+                    exclude_subscription_id=subscription.id if subscription else None,
+                )
+                if should_carry_trial_remaining_days():
+                    for _kt in killed_trials:
+                        if _kt.end_date and _kt.end_date > _now_trial:
+                            _bonus_seconds += max(0, (_kt.end_date - _now_trial).total_seconds())
 
             # Защитная ветка: собственный триал исключён из deactivate выше и сюда
             # НЕ попадает — его конвертацию (is_trial=False) выполняет
@@ -1045,7 +1044,11 @@ async def purchase_tariff(
                     connected_squads=squads,
                 )
             else:
-                # Create new subscription (или конверсия исключённого выше триала)
+                # Create a NEW, separate subscription. convert_alive_trial=False:
+                # покупка тарифа в кабинете НЕ конвертирует и не гасит пробники —
+                # они продолжают идти рядом (решение владельца, #1 two-trials).
+                # В одно-тарифном режиме внутренняя конверсия и так не срабатывает
+                # (она под флагом мульти-тарифа), так что флаг там безвреден.
                 try:
                     subscription = await create_paid_subscription(
                         db=db,
@@ -1056,6 +1059,7 @@ async def purchase_tariff(
                         connected_squads=squads,
                         tariff_id=tariff.id,
                         conversion_trial=_conversion_trial,
+                        convert_alive_trial=False,
                     )
                 except IntegrityError:
                     # Partial unique index violation: user already has active subscription for this tariff
@@ -1308,6 +1312,11 @@ async def get_trial_info(
     """Get trial subscription info and availability."""
     await db.refresh(user, ['subscriptions'])
 
+    # Безлимит-триал (Artemida) — независимая от лимитного триала гейт-функция
+    # (свои флаги, своя проверка has_used_trial('unlimited')). Считаем один раз и
+    # прокидываем в каждый из веток ответа ниже, не трогая смысл остальных полей.
+    unlimited_available = unlimited_trial_service.unlimited_trial_available(user)
+
     # Проверяем, отключён ли триал для этого типа пользователя
     if settings.is_trial_disabled_for_user(getattr(user, 'auth_type', 'telegram')):
         return TrialInfoResponse(
@@ -1319,6 +1328,7 @@ async def get_trial_info(
             price_kopeks=0,
             price_rubles=0,
             reason_unavailable='Trial is not available for your account type',
+            unlimited=unlimited_available,
         )
 
     duration_days = settings.TRIAL_DURATION_DAYS
@@ -1351,9 +1361,14 @@ async def get_trial_info(
     except Exception as e:
         logger.error('Error getting trial tariff for info', error=e)
 
-    # Check if user already has an active subscription
+    # Активная ПЛАТНАЯ подписка блокирует бесплатный триал; активный ПРОБНИК — нет.
+    # Так «Обычный» и «Премиум» пробники берутся оба в любом порядке (повтор того
+    # же пробника всё равно закрыт is_trial_already_used / has_used_trial('unlimited')).
     subs = getattr(user, 'subscriptions', None) or []
-    has_active = any(s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) for s in subs)
+    has_active = any(
+        s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) and not s.is_trial
+        for s in subs
+    )
     has_used_trial = user.is_trial_already_used()
 
     if has_active:
@@ -1366,6 +1381,7 @@ async def get_trial_info(
             price_kopeks=price_kopeks,
             price_rubles=price_kopeks / 100,
             reason_unavailable='You already have an active subscription',
+            unlimited=unlimited_available,
         )
 
     if has_used_trial:
@@ -1378,6 +1394,7 @@ async def get_trial_info(
             price_kopeks=price_kopeks,
             price_rubles=price_kopeks / 100,
             reason_unavailable='Trial already used',
+            unlimited=unlimited_available,
         )
 
     return TrialInfoResponse(
@@ -1388,6 +1405,7 @@ async def get_trial_info(
         requires_payment=requires_payment,
         price_kopeks=price_kopeks,
         price_rubles=price_kopeks / 100,
+        unlimited=unlimited_available,
     )
 
 
@@ -1407,9 +1425,14 @@ async def activate_trial(
             detail='Trial is not available for your account type',
         )
 
-    # Check if user already has an active subscription
+    # Активная ПЛАТНАЯ подписка блокирует бесплатный триал; активный ПРОБНИК — нет
+    # (симметрично get_trial_info) — чтобы «Обычный» и «Премиум» брались в любом
+    # порядке. Повтор того же пробника закрыт is_trial_already_used ниже.
     subs = getattr(user, 'subscriptions', None) or []
-    has_active = any(s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) for s in subs)
+    has_active = any(
+        s.status == 'active' and s.end_date and s.end_date > datetime.now(UTC) and not s.is_trial
+        for s in subs
+    )
     if has_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1609,5 +1632,74 @@ async def activate_trial(
             user_id=user.id,
             error=str(yconv_err),
         )
+
+    return _subscription_to_response(subscription, user=user)
+
+
+@router.post('/trial/unlimited', response_model=SubscriptionResponse)
+async def activate_unlimited_trial(
+    user: User = Depends(get_current_cabinet_user),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Activate the unlimited (Artemida) trial subscription.
+
+    Mirrors ``activate_trial``'s registration/auth/db-and-user acquisition. All
+    business logic (trial subscription creation + vendor provisioning +
+    rollback on a failed activation) lives in
+    ``unlimited_trial_service.activate_unlimited_trial`` — this endpoint only
+    gates access and translates the service's exceptions into cabinet HTTP
+    errors.
+
+    Independent of the limited trial: this does NOT check for an existing
+    active subscription the way ``activate_trial`` does — eligibility here is
+    entirely ``unlimited_trial_service.unlimited_trial_available``'s call (its
+    own flags + verified-account check + ``has_used_trial('unlimited')``,
+    which two-trials-by-design does not conflate with limited-trial usage).
+    """
+    from app.external.artemida_api import ArtemidaAPIError
+
+    # unlimited_trial_available() reads user.has_used_trial(...), which
+    # iterates user.subscriptions synchronously — must be eagerly loaded first
+    # (same precondition as activate_trial's user.is_trial_already_used() above).
+    await db.refresh(user, ['subscriptions'])
+
+    if not unlimited_trial_service.unlimited_trial_available(user):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Unlimited trial is not available',
+        )
+
+    try:
+        subscription = await unlimited_trial_service.activate_unlimited_trial(db, user)
+    except (
+        unlimited_trial_service.UnlimitedTrialNotEligible,
+        unlimited_trial_service.UnlimitedTrialUnavailable,
+    ) as error:
+        logger.warning('Cabinet: unlimited trial unavailable at activation time', user_id=user.id, error=error)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Unlimited trial is not available',
+        ) from error
+    except unlimited_trial_service.UnlimitedTrialActivationError as error:
+        # Rollback of the half-created trial subscription ALSO failed — the
+        # service already logged this critically. Distinct (500) from the
+        # ordinary vendor-refusal case below, which rolled back cleanly.
+        logger.critical(
+            'Cabinet: failed to roll back unlimited trial after a failed activation',
+            user_id=user.id,
+            error=error,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to activate unlimited trial',
+        ) from error
+    except ArtemidaAPIError as error:
+        logger.error('Cabinet: vendor refused unlimited trial activation', user_id=user.id, error=error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to activate unlimited trial',
+        ) from error
+
+    logger.info('Unlimited trial subscription activated for user', user_id=user.id)
 
     return _subscription_to_response(subscription, user=user)

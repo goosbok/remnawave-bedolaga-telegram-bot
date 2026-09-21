@@ -114,6 +114,7 @@ async def activate_promocode(
         'trial_subscription_exists': 'You already have a subscription, so this trial code cannot be applied',
         'trial_provisioning_failed': 'Could not provision the trial right now, please try again later',
         'traffic_not_applicable': 'This promo code only grants traffic, and your subscription is already unlimited',
+        'external_vendor_not_extendable': 'This promo code cannot be applied to your current subscription',
         'user_not_found': 'User not found',
         'server_error': 'Server error occurred',
     }

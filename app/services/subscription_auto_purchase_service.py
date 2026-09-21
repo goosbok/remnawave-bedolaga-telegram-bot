@@ -536,6 +536,22 @@ async def _auto_extend_subscription(
     if prepared is None:
         return False
 
+    # Go-live guard: autopay (background auto-extend) is disabled for external-vendor
+    # subscriptions (e.g. Artemida) until the paid vendor renewal is verified live in
+    # production. A background run would charge the balance and then renew the vendor
+    # key; the interactive path now compensates (refund+revert) on a vendor error, but
+    # this background path does NOT — so we simply do not autopay vendor subs yet. Skip
+    # before charging/extending/calling the vendor and return the same "not extended"
+    # value the other early-outs return. The remnawave (own-panel) path is unaffected.
+    if prepared.subscription.is_external_vendor:
+        logger.info(
+            '🔁 Автопокупка: пропуск автопродления для тарифа внешнего вендора '
+            '(автоплатёж отключён до проверки платного продления у вендора)',
+            format_user_id=_format_user_id(user),
+            subscription_id=prepared.subscription.id,
+        )
+        return False
+
     if prepared.price_kopeks > 0 and user.balance_kopeks < prepared.price_kopeks:
         logger.info(
             '🔁 Автопокупка: у пользователя недостаточно средств для продления (<)',
@@ -690,13 +706,18 @@ async def _auto_extend_subscription(
     else:
         should_reset_traffic = settings.RESET_TRAFFIC_ON_PAYMENT
     try:
-        await subscription_service.update_remnawave_user(
-            db,
-            updated_subscription,
-            reset_traffic=should_reset_traffic,
-            reset_reason='смена тарифа' if is_tariff_change else 'продление подписки',
-            sync_squads=True,
-        )
+        # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ вызовом у вендора с
+        # идемпотентным ключом на пост-extend end_date; renew_external возвращает False
+        # только для remnawave — тогда штатный пуш состояния в панель ниже отрабатывает
+        # как раньше (для remnawave поведение не меняется).
+        if not await subscription_service.renew_external(db, updated_subscription, period_days=prepared.period_days):
+            await subscription_service.update_remnawave_user(
+                db,
+                updated_subscription,
+                reset_traffic=should_reset_traffic,
+                reset_reason='смена тарифа' if is_tariff_change else 'продление подписки',
+                sync_squads=True,
+            )
     except Exception as error:  # pragma: no cover - defensive logging
         logger.error(
             '⚠️ Автопокупка: не удалось обновить RemnaWave пользователя после продления',

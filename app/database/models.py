@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, datetime, time, timedelta
 
 
@@ -2065,6 +2066,11 @@ class Tariff(Base):
     # Внешний сквад RemnaWave (UUID) — назначается пользователю при создании подписки
     external_squad_uuid = Column(String(255), nullable=True, default=None)
 
+    # Источник провижининга подписки: 'remnawave' (свои ноды) | 'artemida' (вендор).
+    provider = Column(String(20), nullable=False, default='remnawave', server_default='remnawave')
+    # Провайдер-специфичные опции (напр. пиннинг локаций Artemida). Пусто = дефолт.
+    provider_opts = Column(JSON, nullable=False, default=dict, server_default='{}')
+
     created_at = Column(AwareDateTime(), default=func.now())
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now())
 
@@ -2242,6 +2248,23 @@ class PartnerStatus(Enum):
     REJECTED = 'rejected'  # Заявка отклонена
 
 
+def _trial_kind(subscription) -> str:
+    """Тип триала по колонке external_provider (без ленивой загрузки tariff).
+
+    Любой внешний вендор (не только artemida) даёт «безлимитный» триал: свап
+    подписки на другого вендора не должен превращать её обратно в «лимитный» и
+    открывать клиенту повторную заявку на тот же вид триала.
+    """
+    return (
+        'unlimited' if (getattr(subscription, 'external_provider', None) or 'remnawave') != 'remnawave' else 'limited'
+    )
+
+
+def generate_public_token() -> str:
+    """Наш стабильный публичный id ссылки, не зависящий от вендора."""
+    return secrets.token_urlsafe(24)
+
+
 class User(Base):
     __tablename__ = 'users'
 
@@ -2319,18 +2342,30 @@ class User(Base):
                 return sub
         return None
 
-    def is_trial_already_used(self) -> bool:
-        """Единый гейт доступности триала для бота И кабинета.
-
-        Раньше проверка дублировалась 4× в боте (purchase.py) и 2× в кабинете, причём
-        с разной логикой. Триал недоступен, если пользователь уже оплачивал подписку
-        ЛИБО у него есть ЛЮБАЯ подписка — кроме PENDING-триала (это повторная попытка
-        оплаты того же триала). Проверяются ВСЕ подписки (multi-tariff-safe). Требует
-        загруженного `subscriptions`.
-        """
+    def has_used_trial(self, kind: str = 'limited') -> bool:
+        """Триал типа kind недоступен, если была платная подписка, есть любая
+        НЕ-триальная подписка, или уже брали триал ЭТОГО же типа (кроме pending)."""
         if self.has_had_paid_subscription:
             return True
-        return any(not sub.is_pending_trial for sub in (self.subscriptions or []))
+        for sub in self.subscriptions or []:
+            if sub.is_pending_trial:
+                continue
+            if not sub.is_trial:
+                return True
+            if _trial_kind(sub) == kind:
+                return True
+        return False
+
+    def is_trial_already_used(self) -> bool:
+        """Единый гейт доступности ЛИМИТНОГО триала для бота И кабинета.
+
+        Раньше проверка дублировалась 4× в боте (purchase.py) и 2× в кабинете, причём
+        с разной логикой. Обратная совместимость: тонкая обёртка над
+        `has_used_trial('limited')`, сохраняет поведение для всех прежних вызовов.
+        Проверяются ВСЕ подписки (multi-tariff-safe). Требует загруженного
+        `subscriptions`.
+        """
+        return self.has_used_trial('limited')
 
     transactions = relationship('Transaction', back_populates='user')
     referral_earnings = relationship('ReferralEarning', foreign_keys='ReferralEarning.user_id', back_populates='user')
@@ -2489,6 +2524,18 @@ class Subscription(Base):
         # shortUuid пережил 3.0.0 и остаётся единственным панельным ключом,
         # которым можно резолвить строку, потерявшую связь.
         Index('ix_subscriptions_remnawave_short_uuid', 'remnawave_short_uuid'),
+        # Публичный роут /a/{token} резолвит подписку по external_ref на
+        # каждый запрос — без индекса это seq-scan по всей таблице. Уникальность
+        # частичная (только provider='artemida'): гарантирует, что
+        # scalar_one_or_none() в _load_subscription_by_ref никогда не увидит
+        # MultipleResultsFound.
+        Index(
+            'uq_subscriptions_artemida_external_ref',
+            'external_ref',
+            unique=True,
+            postgresql_where=text("external_provider = 'artemida'"),
+            sqlite_where=text("external_provider = 'artemida'"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -2545,6 +2592,14 @@ class Subscription(Base):
         String(16), nullable=False, unique=True, server_default=''
     )  # Permanent short ID for username suffix
 
+    # Ключ у внешнего вендора (Artemida). Заполнено только для provider='artemida'.
+    external_provider = Column(String(20), nullable=True, default=None)
+    external_ref = Column(String(255), nullable=True, default=None)
+
+    # Наш стабильный публичный идентификатор ссылки, независимый от вендора.
+    # Ссылка клиента строится на нём, поэтому смена вендора её не меняет.
+    public_token = Column(String(64), nullable=True, unique=True, index=True)
+
     # Тариф (для режима продаж "Тарифы")
     tariff_id = Column(Integer, ForeignKey('tariffs.id', ondelete='RESTRICT'), nullable=True, index=True)
 
@@ -2589,6 +2644,14 @@ class Subscription(Base):
         """Проверяет, истёк ли срок подписки"""
         end = _aware(self.end_date)
         return end is not None and end <= datetime.now(UTC)
+
+    @property
+    def is_external_vendor(self) -> bool:
+        """True when this subscription is provisioned on an external paid vendor
+        (e.g. Artemida) rather than our own Remnawave panel — i.e. extending or
+        revoking it costs money at, or must be pushed to, that vendor."""
+        provider = self.external_provider
+        return bool(provider) and provider != 'remnawave'
 
     @property
     def should_be_expired(self) -> bool:

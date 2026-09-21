@@ -39,6 +39,16 @@ async def update_autopay(
         )
 
     if request.enabled:
+        # Go-live guard: autopay is disabled for external-vendor subs (e.g. Artemida)
+        # until the paid vendor renewal is verified live in production. The background
+        # autopay paths do not compensate (refund+revert) on a vendor error, so we do not
+        # let clients switch it on yet. Disabling (enabled=False) still works below.
+        if subscription.is_external_vendor:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Автоплатёж недоступен для этого тарифа',
+            )
+
         # Classic subscriptions cannot use autopay when tariff mode is enabled
         from app.config import settings
 

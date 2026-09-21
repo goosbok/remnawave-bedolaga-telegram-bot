@@ -25,6 +25,8 @@ from app.database.crud.subscription import (
 )
 from app.database.crud.user import get_user_by_id
 from app.database.models import Subscription, SubscriptionStatus
+from app.external.artemida_api import ArtemidaAPIError
+from app.services.provider_swap_service import ProviderSwapError, move_subscription_to_provider
 from app.services.subscription_service import SubscriptionService
 
 from ..dependencies import get_db_session, require_api_token
@@ -32,6 +34,8 @@ from ..schemas.subscriptions import (
     SubscriptionCreateRequest,
     SubscriptionDevicesRequest,
     SubscriptionExtendRequest,
+    SubscriptionMoveProviderRequest,
+    SubscriptionMoveProviderResponse,
     SubscriptionResponse,
     SubscriptionSquadRequest,
     SubscriptionTrafficRequest,
@@ -391,6 +395,41 @@ async def remove_subscription_squad_endpoint(
     subscription = await remove_subscription_squad(db, subscription, squad_uuid)
     subscription = await _get_subscription(db, subscription.id)
     return _serialize_subscription(subscription)
+
+
+@router.post('/{subscription_id}/move-provider', response_model=SubscriptionMoveProviderResponse)
+async def move_subscription_provider_endpoint(
+    subscription_id: int,
+    payload: SubscriptionMoveProviderRequest,
+    _: Any = Security(require_api_token),
+    db: AsyncSession = Depends(get_db_session),
+) -> SubscriptionMoveProviderResponse:
+    """Manual, admin-only trigger: move ``subscription_id`` onto another vendor.
+
+    See ``app.services.provider_swap_service.move_subscription_to_provider`` for what
+    this does and doesn't touch — notably, ``subscription_url`` stays byte-identical.
+    Not wired into any bot/cabinet UI; an operator calls this directly against the
+    admin API.
+    """
+    subscription = await _get_subscription(db, subscription_id)
+
+    try:
+        await move_subscription_to_provider(db, subscription, payload.provider)
+    except ProviderSwapError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    except ArtemidaAPIError as error:
+        logger.warning(
+            'move-provider: вендор отказал в провижене, своп не выполнен',
+            subscription_id=subscription_id,
+            target_provider=payload.provider,
+            error=str(error),
+        )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, 'Vendor provisioning failed') from error
+
+    return SubscriptionMoveProviderResponse(
+        external_provider=subscription.external_provider,
+        subscription_url=subscription.subscription_url,
+    )
 
 
 @router.delete('/{subscription_id}', response_model=SubscriptionResponse)

@@ -163,6 +163,7 @@ class PromoCodeService:
                     'trial_subscription_exists',
                     'trial_provisioning_failed',
                     'traffic_not_applicable',
+                    'external_vendor_not_extendable',
                 ):
                     return {'success': False, 'error': error_key}
                 raise
@@ -410,6 +411,19 @@ class PromoCodeService:
             and promocode.subscription_days > 0
         ):
             target_sub = await self._pick_target_subscription(db, user, promocode, subscription_id)
+            if target_sub.is_external_vendor:
+                # Внешний вендор (Artemida): extend_subscription двинул бы локальный
+                # end_date, не продлив ключ у вендора, — платящий-ничего клиент потерял
+                # бы доступ. Сигналим «эффект не применён» так же, как остальные
+                # days-отказы: ValueError из белого списка откатывает резерв
+                # использования, промокод остаётся неиспользованным.
+                logger.warning(
+                    'Дни по промокоду не начислены: подписка обслуживается внешним вендором',
+                    _format_user_log=self._format_user_log(user),
+                    subscription_id=target_sub.id,
+                    program='promocode_days',
+                )
+                raise ValueError('external_vendor_not_extendable')
             # NB: a days-promocode is a FREE grant, not a purchase — do NOT flip
             # is_trial here (bug #629889 class). Converting a trial to is_trial=False
             # without a charge un-gated it from try_auto_extend_expired_after_topup,
@@ -576,6 +590,17 @@ class PromoCodeService:
                 trial_days = tariff_trial_days
 
             if existing_same_tariff_sub:
+                if existing_same_tariff_sub.is_external_vendor:
+                    # Внешний вендор (Artemida): продлевать локально, не тронув ключ у
+                    # вендора, — молча лишить клиента доступа. Сигналим «не применён»
+                    # тем же ValueError, что откатывает резерв использования.
+                    logger.warning(
+                        'Триал-промокод не продлил подписку: обслуживается внешним вендором',
+                        _format_user_log=self._format_user_log(user),
+                        subscription_id=existing_same_tariff_sub.id,
+                        program='promocode_trial',
+                    )
+                    raise ValueError('external_vendor_not_extendable')
                 # User already has this tariff — extend it
                 await extend_subscription(db, existing_same_tariff_sub, trial_days)
                 await self.subscription_service.update_remnawave_user(db, existing_same_tariff_sub)

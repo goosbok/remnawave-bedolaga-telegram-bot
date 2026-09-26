@@ -199,3 +199,25 @@ async def test_activation_raises_activation_error_when_rollback_also_fails(monke
 
         # The original vendor error must still be reachable for diagnostics.
         assert isinstance(exc_info.value.__cause__, ArtemidaInsufficientBalance)
+
+
+@pytest.mark.asyncio
+async def test_activation_pings_admins(monkeypatch):
+    """A successful premium-trial activation notifies admins (the same notification as
+    a normal trial), so vendor trials show up in the admin chat — not only the
+    low-balance alert."""
+    from app.services import unlimited_trial_service as mod
+
+    notify = AsyncMock()
+    monkeypatch.setattr(mod, '_notify_admins_trial_activation', notify)
+    _configure_artemida(monkeypatch)
+
+    async with memory_session(monkeypatch, _TABLES) as db:
+        await _make_trial_tariff(db)
+        user = await _make_verified_user(db)
+
+        subscription = await activate_unlimited_trial(db, user)
+
+        notify.assert_awaited_once()
+        args, _kwargs = notify.await_args
+        assert args[2].id == subscription.id  # (db, user, subscription, bot=...)

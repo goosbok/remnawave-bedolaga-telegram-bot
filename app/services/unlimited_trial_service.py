@@ -67,6 +67,32 @@ async def resolve_unlimited_trial_tariff(db, cfg=settings):
     return result.scalar_one_or_none()
 
 
+async def _notify_admins_trial_activation(db, user, subscription, *, bot=None) -> None:
+    """Ping admins about a premium (Artemida) trial activation — the SAME notification
+    as a normal trial, so vendor trials show up in the admin chat, not just the
+    low-balance alert. Best-effort: never breaks the activation."""
+    try:
+        if not getattr(settings, 'ADMIN_NOTIFICATIONS_ENABLED', False):
+            return
+        from app.bot_factory import create_bot
+        from app.services.admin_notification_service import AdminNotificationService
+
+        notify_bot = bot or create_bot()
+        try:
+            await AdminNotificationService(notify_bot).send_trial_activation_notification(
+                db, user, subscription, charged_amount_kopeks=None
+            )
+        finally:
+            if notify_bot is not bot:
+                await notify_bot.session.close()
+    except Exception as error:
+        logger.warning(
+            'Не удалось отправить админ-уведомление о премиум-триале',
+            user_id=getattr(user, 'id', None),
+            error=error,
+        )
+
+
 async def activate_unlimited_trial(db, user, *, bot=None):
     """Активирует безлимит-триал (Artemida) для пользователя.
 
@@ -141,4 +167,5 @@ async def activate_unlimited_trial(db, user, *, bot=None):
             ) from error
         raise
 
+    await _notify_admins_trial_activation(db, user, subscription, bot=bot)
     return subscription

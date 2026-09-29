@@ -19,6 +19,7 @@ from app.services.pricing_engine import pricing_engine
 from app.services.subscription_renewal_service import (
     SubscriptionRenewalChargeError,
     SubscriptionRenewalService,
+    is_non_renewable_vendor_trial,
 )
 from app.services.user_cart_service import user_cart_service
 
@@ -49,6 +50,10 @@ async def get_renewal_options(
 
     # Classic subscriptions cannot be renewed when tariff mode is enabled
     if settings.is_tariffs_mode() and not subscription.tariff_id:
+        return []
+
+    # Пробный ключ вендора не продлевается — только покупка тарифа
+    if is_non_renewable_vendor_trial(subscription):
         return []
 
     _non_renewable = {SubscriptionStatus.DISABLED.value, SubscriptionStatus.PENDING.value}
@@ -135,6 +140,15 @@ async def renew_subscription(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Classic subscriptions cannot be renewed. Please purchase a tariff.',
+        )
+
+    if is_non_renewable_vendor_trial(subscription):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'trial_not_renewable',
+                'message': 'Пробную подписку нельзя продлить — оформите тариф',
+            },
         )
 
     _non_renewable = {SubscriptionStatus.DISABLED.value, SubscriptionStatus.PENDING.value}

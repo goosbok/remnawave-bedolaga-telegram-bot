@@ -82,6 +82,7 @@ from app.services.subscription_renewal_service import (
     calculate_missing_amount,
     decode_payment_payload,
     encode_payment_payload,
+    is_non_renewable_vendor_trial,
     with_admin_notification_service,
 )
 from app.services.subscription_service import SubscriptionService
@@ -4671,6 +4672,10 @@ async def _prepare_subscription_renewal_options(
 ) -> tuple[list[MiniAppSubscriptionRenewalPeriod], dict[str | int, dict[str, Any]], str | None]:
     from app.services.pricing_engine import pricing_engine
 
+    # Пробный ключ вендора не продлевается — только покупка тарифа
+    if is_non_renewable_vendor_trial(subscription):
+        return [], {}, None
+
     option_payloads: list[tuple[MiniAppSubscriptionRenewalPeriod, dict[str, Any]]] = []
 
     # Определяем доступные периоды: из тарифа или из настроек
@@ -5324,6 +5329,15 @@ async def submit_subscription_renewal_endpoint(
             detail={
                 'code': 'classic_subscription_blocked',
                 'message': 'Classic subscriptions cannot be renewed. Please purchase a tariff.',
+            },
+        )
+
+    if is_non_renewable_vendor_trial(subscription):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'trial_not_renewable',
+                'message': 'Пробную подписку нельзя продлить — оформите тариф',
             },
         )
 

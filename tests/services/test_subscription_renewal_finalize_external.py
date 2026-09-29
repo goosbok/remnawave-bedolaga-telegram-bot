@@ -273,3 +273,41 @@ async def test_finalize_remnawave_panel_failure_defers_to_retry_queue(monkeypatc
     add_spy.assert_not_awaited()  # panel failure is best-effort — money is NOT refunded
     assert user.balance_kopeks == 100_00 - 500_00
     assert result.subscription is subscription_after
+
+
+@pytest.mark.asyncio
+async def test_finalize_refuses_vendor_trial_before_charging(monkeypatch):
+    """A vendor trial key cannot be renewed at the vendor ("Пробный ключ нельзя
+    продлевать"). finalize is the chokepoint for every renewal surface (cabinet, bot,
+    miniapp, crypto payments), so it must refuse such a subscription BEFORE charging
+    the balance or extending end_date — not charge, extend, fail at the vendor and
+    compensate. The refusal must not be a SubscriptionRenewalChargeError either:
+    callers map that to "insufficient funds".
+    """
+    now = datetime.now(UTC)
+    subscription = SimpleNamespace(
+        id=232, status='expired', end_date=now - timedelta(days=1), remnawave_id=None,
+        is_trial=True, external_provider='artemida', external_ref='key_trial_1', user_id=1,
+    )
+    user = SimpleNamespace(
+        id=1, remnawave_id=None, balance_kopeks=500_00,
+        promo_offer_discount_percent=0, promo_offer_discount_source=None, promo_offer_discount_expires_at=None,
+    )
+
+    service_mock = MagicMock()
+    service_mock.renew_external = AsyncMock()
+    extend = AsyncMock()
+    subtract = AsyncMock(return_value=True)
+    _patch_common(monkeypatch, service_mock, subscription)
+    monkeypatch.setattr(renewal_mod, 'extend_subscription', extend)
+    monkeypatch.setattr(renewal_mod, 'subtract_user_balance', subtract)
+
+    pricing = SimpleNamespace(final_total=499_00, period_days=30, promo_offer_discount=0, breakdown={})
+    with pytest.raises(renewal_mod.SubscriptionRenewalNotAllowedError) as exc:
+        await SubscriptionRenewalService().finalize(_make_db(subscription), user, subscription, pricing)
+
+    assert not isinstance(exc.value, renewal_mod.SubscriptionRenewalChargeError)
+    subtract.assert_not_awaited()
+    extend.assert_not_awaited()
+    service_mock.renew_external.assert_not_awaited()
+    assert user.balance_kopeks == 500_00

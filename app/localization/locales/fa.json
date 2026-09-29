@@ -1055,6 +1055,8 @@
   "TARIFF_RENEW_SUB_BUTTON": "🔄 {name} ({days} روز)",
   "TARIFF_RENEW_SUCCESS": "🎉 <b>اشتراک با موفقیت تمدید شد!</b>\n\n📦 تعرفه: <b>{name}</b>\n📊 ترافیک: {traffic}\n📱 دستگاه‌ها: {devices}\n📅 افزوده شد: {period}\n💰 کسر شد: {price}",
   "TARIFF_RENEW_TITLE": "🔄 <b>تمدید اشتراک</b>{discount_hint}\n\n📦 تعرفه: <b>{name}</b>\n📊 ترافیک: {traffic}\n📱 دستگاه‌ها: {devices}\n\nدوره تمدید را انتخاب کنید:",
+  "TARIFF_RENEW_VENDOR_ERROR": "❌ تمدید اشتراک ناموفق بود. مبلغ به موجودی شما بازگردانده شد، لطفاً بعداً دوباره تلاش کنید.",
+  "TARIFF_RENEW_VENDOR_TRIAL": "اشتراک آزمایشی قابل تمدید نیست — لطفاً یک طرح خریداری کنید",
   "TARIFF_SWITCH_BUTTON_FREE": "{name} (رایگان)",
   "TARIFF_SWITCH_CHARGED_LINE": "💰 کسر شد: {price}",
   "TARIFF_SWITCH_CONFIRM": "✅ <b>تأیید تغییر تعرفه</b>\n\n📌 تعرفه فعلی: <b>{current}</b>\n📦 تعرفه جدید: <b>{name}</b>\n📊 ترافیک: {traffic}\n📱 دستگاه‌ها: {devices}\n{time_info}\n{discount}\n💰 <b>مبلغ قابل پرداخت: {total}</b>\n\n💳 موجودی شما: {balance}\nپس از پرداخت: {after}",

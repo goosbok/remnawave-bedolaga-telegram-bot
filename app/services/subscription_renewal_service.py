@@ -46,6 +46,21 @@ class SubscriptionRenewalChargeError(SubscriptionRenewalError):
     """Raised when the balance charge step fails."""
 
 
+class SubscriptionRenewalNotAllowedError(SubscriptionRenewalError):
+    """Raised when the subscription cannot be renewed at all (nothing was charged)."""
+
+
+def is_non_renewable_vendor_trial(subscription: Any) -> bool:
+    """Trial served by an external vendor: its trial key cannot be renewed.
+
+    The vendor issues trials as a separate trial key and refuses ``renew`` on it
+    ("Пробный ключ нельзя продлевать. Создайте платный ключ."), so the only way on
+    is buying a paid tariff (a fresh paid key). Own-panel trials are not affected.
+    """
+    provider = getattr(subscription, 'external_provider', None)
+    return bool(getattr(subscription, 'is_trial', False)) and provider not in (None, '', 'remnawave')
+
+
 @dataclass(slots=True)
 class SubscriptionRenewalPricing:
     period_days: int
@@ -446,6 +461,11 @@ class SubscriptionRenewalService:
         description: str | None = None,
         payment_method: PaymentMethod | None = None,
     ) -> SubscriptionRenewalResult:
+        # Before any charge: every renewal surface ends up here, and a vendor trial
+        # would only fail at the vendor after the balance was charged and end_date committed.
+        if is_non_renewable_vendor_trial(subscription):
+            raise SubscriptionRenewalNotAllowedError('Vendor trial subscriptions cannot be renewed')
+
         final_total = int(pricing.final_total)
         final_total = max(final_total, 0)
 

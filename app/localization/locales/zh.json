@@ -2092,6 +2092,8 @@
   "TARIFF_RENEW_SUB_BUTTON": "🔄 {name}（{days}天）",
   "TARIFF_RENEW_SUCCESS": "🎉 <b>续订成功！</b>\n\n📦 套餐：<b>{name}</b>\n📊 流量：{traffic}\n📱 设备：{devices}\n📅 新增时长：{period}\n💰 已扣款：{price}",
   "TARIFF_RENEW_TITLE": "🔄 <b>续订订阅</b>{discount_hint}\n\n📦 套餐：<b>{name}</b>\n📊 流量：{traffic}\n📱 设备：{devices}\n\n请选择续订周期：",
+  "TARIFF_RENEW_VENDOR_ERROR": "❌ 续订失败。款项已退回您的余额，请稍后重试。",
+  "TARIFF_RENEW_VENDOR_TRIAL": "试用订阅无法续订——请购买套餐",
   "TARIFF_SWITCH_BUTTON_FREE": "{name}（免费）",
   "TARIFF_SWITCH_CHARGED_LINE": "💰 已扣款：{price}",
   "TARIFF_SWITCH_CONFIRM": "✅ <b>切换套餐确认</b>\n\n📌 当前套餐：<b>{current}</b>\n📦 新套餐：<b>{name}</b>\n📊 流量：{traffic}\n📱 设备：{devices}\n{time_info}\n{discount}\n💰 <b>应付：{total}</b>\n\n💳 您的余额：{balance}\n支付后：{after}",

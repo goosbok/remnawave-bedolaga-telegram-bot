@@ -2092,6 +2092,8 @@
   "TARIFF_RENEW_SUB_BUTTON": "🔄 {name} ({days}д.)",
   "TARIFF_RENEW_SUCCESS": "🎉 <b>Підписку успішно продовжено!</b>\n\n📦 Тариф: <b>{name}</b>\n📊 Трафік: {traffic}\n📱 Пристроїв: {devices}\n📅 Додано: {period}\n💰 Списано: {price}",
   "TARIFF_RENEW_TITLE": "🔄 <b>Продовження підписки</b>{discount_hint}\n\n📦 Тариф: <b>{name}</b>\n📊 Трафік: {traffic}\n📱 Пристроїв: {devices}\n\nОберіть період продовження:",
+  "TARIFF_RENEW_VENDOR_ERROR": "❌ Не вдалося продовжити підписку. Кошти повернуто на баланс, спробуйте пізніше.",
+  "TARIFF_RENEW_VENDOR_TRIAL": "Пробну підписку не можна продовжити — оформіть тариф",
   "TARIFF_SWITCH_BUTTON_FREE": "{name} (безкоштовно)",
   "TARIFF_SWITCH_CHARGED_LINE": "💰 Списано: {price}",
   "TARIFF_SWITCH_CONFIRM": "✅ <b>Підтвердження перемикання тарифу</b>\n\n📌 Поточний тариф: <b>{current}</b>\n📦 Новий тариф: <b>{name}</b>\n📊 Трафік: {traffic}\n📱 Пристроїв: {devices}\n{time_info}\n{discount}\n💰 <b>До сплати: {total}</b>\n\n💳 Ваш баланс: {balance}\nПісля оплати: {after}",

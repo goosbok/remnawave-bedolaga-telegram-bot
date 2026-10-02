@@ -900,6 +900,42 @@ async def test_logo_fetch_failure_degrades_and_resends(monkeypatch):
     assert rich_menu.is_rich_menu_enabled() is True
 
 
+async def test_rich_message_no_media_found_is_a_logo_fetch_error(monkeypatch):
+    """Прод 2026-10-02: RICH_MESSAGE_PHOTO_NO_MEDIA_FOUND не ловился маркерами.
+
+    Ссылка на логотип отдавала HTML вместо картинки, Telegram отвечал именно
+    этой ошибкой — а она не входила в _MEDIA_FETCH_ERROR_MARKERS, поэтому вместо
+    задуманного «повторить без логотипа и пометить его недоступным» каждое
+    уведомление падало в общий фоллбек и спамило лог.
+    """
+    _patch_content_sources(monkeypatch)
+    monkeypatch.setattr(type(settings), 'is_multi_tariff_enabled', lambda self: False)
+    monkeypatch.setattr(settings, 'MAIN_MENU_RICH_LOGO_URL', 'https://example.com/logo.png', raising=False)
+
+    bot = AsyncMock()
+    calls: list[str] = []
+
+    def _reject_logo(**kwargs):
+        calls.append(kwargs['rich_message'].html)
+        if '<img' in kwargs['rich_message'].html:
+            raise TelegramBadRequest(
+                method=None, message='Telegram server says - Bad Request: RICH_MESSAGE_PHOTO_NO_MEDIA_FOUND'
+            )
+        return AsyncMock()()
+
+    bot.send_rich_message.side_effect = _reject_logo
+
+    sent = await rich_menu.try_send_rich_main_menu(
+        bot, 1, _make_user(None), DummyTexts(), AsyncMock(), _make_keyboard()
+    )
+
+    assert sent is True
+    assert len(calls) == 2
+    assert '<img' in calls[0]
+    assert '<img' not in calls[1], 'после NO_MEDIA_FOUND повтор обязан идти без логотипа'
+    assert rich_menu.is_rich_menu_enabled() is True
+
+
 @pytest.mark.parametrize('value', ['none', 'off', 'no', 'false', 'disabled', '-', 'NONE', ' None '])
 async def test_logo_can_be_disabled_explicitly(monkeypatch, tmp_path, value):
     """Rich-меню должно работать вообще без логотипа.

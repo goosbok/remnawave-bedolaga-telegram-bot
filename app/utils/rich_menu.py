@@ -89,6 +89,9 @@ _MEDIA_FETCH_ERROR_MARKERS = (
     'photo_invalid',
     'image_process',
     'wrong type of the web page',
+    # Rich-сообщения (Bot API 10.1+): Telegram не смог скачать <img> по URL —
+    # например, когда ссылка отдаёт HTML вместо картинки (RICH_MESSAGE_PHOTO_NO_MEDIA_FOUND).
+    'no_media_found',
 )
 
 # Теги, которые допускает sanitize_html, но не понимает rich-HTML: спойлерный

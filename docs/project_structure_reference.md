@@ -1382,6 +1382,9 @@
 - `app/services/apple_iap_reconciliation_service.py` — Python-модуль
   Классы: `AppleReconciliationResult`, `AppleIAPReconciliationService` (3 методов)
   Функции: нет
+- `app/services/artemida_balance_alert.py` — Python-модуль
+  Классы: нет
+  Функции: `check_balance_and_alert` — Read the vendor balance and alert admins if it is below the threshold.
 - `app/services/aurapay_service.py` — Python-модуль
   Классы: `AuraPayAPIError` (1 методов), `AuraPayService` (10 методов)
   Функции: нет
@@ -1695,8 +1698,8 @@
   Классы: `RebrandedDocument`
   Функции: `rebrand_links`
 - `app/services/subscription_renewal_service.py` — Python-модуль
-  Классы: `SubscriptionRenewalError`, `SubscriptionRenewalChargeError`, `SubscriptionRenewalPricing` (2 методов), `SubscriptionRenewalResult`, `RenewalPaymentDescriptor` (1 методов), `SubscriptionRenewalService` (2 методов)
-  Функции: `build_renewal_period_id`, `build_payment_descriptor`, `encode_payment_payload`, `decode_payment_payload`, `build_payment_metadata`, `parse_payment_metadata`, `with_admin_notification_service`, `calculate_missing_amount`
+  Классы: `SubscriptionRenewalError`, `SubscriptionRenewalChargeError`, `SubscriptionRenewalNotAllowedError`, `SubscriptionRenewalPricing` (2 методов), `SubscriptionRenewalResult`, `RenewalPaymentDescriptor` (1 методов), `SubscriptionRenewalService` (2 методов)
+  Функции: `is_non_renewable_vendor_trial` — Trial served by an external vendor: its trial key cannot be renewed., `build_renewal_period_id`, `build_payment_descriptor`, `encode_payment_payload`, `decode_payment_payload`, `build_payment_metadata`, `parse_payment_metadata`, `with_admin_notification_service`, `calculate_missing_amount`
 - `app/services/subscription_service.py` — Python-модуль
   Классы: `PropagateSquadsResult`, `SubscriptionService` (35 методов)
   Функции: `get_traffic_reset_strategy` — Получает стратегию сброса трафика., `panel_id_is_free_for` — Не держит ли этот панельный id уже ДРУГАЯ строка подписок., `link_subscription_panel_identity` — Проставить строке id панельного аккаунта, который только что обновили., `reset_subscription_with_panel` — Обнулить подписку «как будто не оформляли» и снять доступ в панели RemnaWave,
@@ -1929,7 +1932,7 @@
   Классы: нет
   Функции: `register_provider` — For tests / future vendors., `get_provider_by_name`, `get_provider`
 - `app/services/providers/artemida.py` — Python-модуль
-  Классы: `ArtemidaProvider` (7 методов)
+  Классы: `ArtemidaProvider` (10 методов)
   Функции: нет
 - `app/services/providers/base.py` — Python-модуль
   Классы: `SubscriptionProvider` (6 методов)
@@ -2195,6 +2198,9 @@
 - `app/webapi/routes/_subscription_state.py` — Python-модуль
   Классы: нет
   Функции: `snapshot_subscription_state`, `restore_subscription_state`
+- `app/webapi/routes/artemida_install.py` — Python-модуль
+  Классы: нет
+  Функции: `wants_install_page` — True when the request looks like a human browser (serve HTML), not a client., `render_install_page`
 - `app/webapi/routes/artemida_sub.py` — Python-модуль
   Классы: нет
   Функции: `artemida_subscription`
@@ -2870,6 +2876,9 @@
 - `tests/middlewares/`
 - `tests/scripts/`
 - `tests/services/`
+- `tests/test_artemida_api_retry.py` — Python-модуль
+  Классы: нет
+  Функции: `test_request_retries_transient_disconnect_then_succeeds`, `test_request_gives_up_as_gateway_error_after_retries`
 - `tests/test_artemida_settings.py` — Python-модуль
   Классы: нет
   Функции: `test_artemida_settings_defaults_are_disabled` — Vendor integration must ship off by default., `test_artemida_settings_read_overrides` — Overrides (as env would supply as strings) are applied as-is.
@@ -3053,6 +3062,9 @@
 - `tests/cabinet/test_admin_user_remnawave_resolver.py` — Python-модуль
   Классы: нет
   Функции: `test_resolver_route_is_registered_before_user_id_route`, `test_resolver_requires_users_read_permission`, `test_resolver_returns_the_exact_matching_subscription` — Would fail if the resolver returned a user-level or primary subscription ID., `test_resolver_accepts_a_short_uuid_for_subscriptions_without_a_panel_id` — Would fail if the resolver only understood numeric panel ids., `test_resolver_rejects_unusable_identifiers_without_any_lookup` — Would fail if garbage input were guessed from user data or hit the database., `test_resolver_rejects_an_identifier_present_only_on_the_legacy_user_field` — Would fail if the route reused legacy user-level resolution., `test_resolver_treats_a_physically_absent_deleted_subscription_as_not_found` — Would fail if absent/deleted records were accidentally resolved., `test_resolver_rejects_duplicate_subscription_mappings_as_a_conflict` — Would fail if corrupted mappings silently selected one subscription.
+- `tests/cabinet/test_admin_vendor_grant.py` — Python-модуль
+  Классы: нет
+  Функции: `service_recorder`, `test_create_vendor_tariff_provisions_at_vendor`, `test_create_vendor_tariff_failure_rolls_back`, `test_create_vendor_tariff_revive_renews_existing_key`, `test_create_panel_tariff_keeps_panel_sync`, `test_extend_vendor_subscription_renews_key`, `test_extend_vendor_subscription_failure_compensates`, `test_shorten_vendor_subscription_rejected`, `test_set_end_date_vendor_subscription_rejected`, `test_change_tariff_of_vendor_subscription_rejected`, `test_change_to_vendor_tariff_rejected`, `test_enable_autopay_vendor_subscription_rejected`, `test_set_traffic_vendor_subscription_rejected`, `test_cancel_vendor_subscription_revokes_key`, `test_set_device_limit_vendor_upgrades_key`
 - `tests/cabinet/test_autopay_cancels_sbp.py` — Python-модуль
   Классы: нет
   Функции: `test_enable_autopay_cancels_active_sbp_recurring`, `test_disable_autopay_does_not_cancel_sbp` — Disabling balance-autopay must NOT touch SBP — only the enable path, `test_enable_autopay_rejected_for_trial_does_not_cancel_sbp` — A rejected enable (trial subscription -> 400) must not fire the, `test_enable_autopay_rejected_for_external_vendor` — Go-live guard: enabling autopay on an external-vendor (Artemida) subscription is, `test_disable_autopay_allowed_for_external_vendor` — Disabling autopay must still work for an external-vendor sub — anyone who somehow
@@ -3280,10 +3292,13 @@
   Функции: `classic_mode` — Drive ``get_traffic_packages`` down the classic (non-tariff) branch., `test_traffic_packages_expose_promo_group_discount` — A 20% traffic promo-group discount surfaces on every package., `test_traffic_packages_no_discount_when_group_has_none` — No promo discount → no discount fields, raw price unchanged., `test_traffic_packages_respect_apply_discounts_to_addons_flag` — When the promo group opts out of addon discounts, traffic stays full price., `test_traffic_packages_apply_discount_in_tariff_mode` — Tariff-mode packages go through the same discount path as classic mode., `test_traffic_packages_floor_displayed_price_at_one_ruble` — An extreme discount never displays below 1₽ — matching POST's max(100,...) floor., `test_traffic_packages_default_group_uses_prorated_period_hint` — Default group period-based traffic discount uses the same ceil(remaining days)
 - `tests/cabinet/test_unlimited_trial_endpoint.py` — Python-модуль
   Классы: нет
-  Функции: `test_eligible_user_activates_unlimited_trial`, `test_flag_off_rejects_without_activating`, `test_unverified_user_rejects_without_activating`, `test_already_used_unlimited_trial_rejects_without_activating`, `test_trial_info_reports_unlimited_available`, `test_trial_info_reports_unlimited_unavailable_when_flag_off`, `test_trial_info_reports_unlimited_unavailable_when_already_used`
+  Функции: `test_eligible_user_activates_unlimited_trial`, `test_flag_off_rejects_without_activating`, `test_unverified_user_rejects_without_activating`, `test_already_used_unlimited_trial_rejects_without_activating`, `test_trial_info_reports_unlimited_available`, `test_trial_info_reports_unlimited_unavailable_when_flag_off`, `test_trial_info_reports_unlimited_unavailable_when_already_used`, `test_trial_info_limited_available_with_active_unlimited_trial` — Активный ПРЕМИУМ-пробник не блокирует бесплатный (лимитный): оба берутся, `test_trial_info_limited_unavailable_with_active_paid` — Активная ПЛАТНАЯ подписка по-прежнему блокирует бесплатный (лимитный)
 - `tests/cabinet/test_vendor_location_management_guard.py` — Python-модуль
   Классы: нет
   Функции: `panel`, `test_get_countries_hides_local_squads_for_vendor_sub` — Artemida sub → no local squads leaked, location management flagged off., `test_get_countries_lists_squads_for_remnawave_sub` — Remnawave sub → squads still enumerated, location management flagged on., `test_post_countries_rejects_vendor_sub_without_charge` — Artemida sub → rejected before any balance/squad mutation., `test_post_countries_still_charges_remnawave_sub` — Remnawave sub → paid squad is added and charged, exactly as before., `test_status_hides_server_chips_for_vendor_sub` — Artemida sub with connected_squads set → no server chips, no squads leaked., `test_status_resolves_server_chips_for_remnawave_sub` — Remnawave sub with connected_squads → server names still resolved, unchanged.
+- `tests/cabinet/test_vendor_trial_not_renewable.py` — Python-модуль
+  Классы: нет
+  Функции: `tariffs_mode`, `no_sync`, `test_vendor_trial_gets_no_renewal_options`, `test_vendor_trial_renewal_is_rejected_before_any_charge`, `test_predicate_blocks_only_vendor_trials`, `test_miniapp_offers_no_renewal_for_vendor_trial`
 - `tests/cabinet/test_verification_resend.py` — Python-модуль
   Классы: нет
   Функции: `test_windows_come_from_settings`, `test_address_key_is_a_digest_and_ignores_case` — Ключ лимита оседает в Redis и в его логах — сам адрес туда попадать не должен., `test_one_inbox_is_protected_across_addresses` — Лимит по IP не спасает чужой ящик: окно по адресу отдаёт 429 само по себе., `test_zero_disables_the_address_window`, `test_pending_address_gets_a_fresh_link`, `test_unknown_address_answers_the_same_and_sends_nothing`, `test_verified_address_answers_the_same_and_keeps_its_token`, `test_throttle_stops_the_send`
@@ -3343,7 +3358,7 @@
   Функции: `test_revive_expired_starts_fresh_period` — Истёкшую реанимируем: статус active, период с «сейчас», трафик обнулён., `test_revive_alive_extends_from_end_date` — Ещё живую продлеваем от её end_date, накопленный трафик не сбрасываем., `test_create_paid_subscription_revives_existing_in_multitariff` — Мульти-тариф + есть ИСТЁКШАЯ запись тарифа → revive, без вставки дубля., `test_create_paid_subscription_revives_expired_trial` — #3004 (централизовано): ИСТЁКШИЙ ТРИАЛ того же тарифа при платной покупке, `test_revive_expired_trial_converts_to_paid` — Реанимация истёкшего ТРИАЛА: снимаем триальный флаг, обнуляем трафик,, `test_create_paid_subscription_does_not_revive_active` — Активную (не истёкшую) НЕ реанимируем — падаем в обычное создание/IntegrityError., `test_create_paid_subscription_skips_revive_without_tariff` — Классический режим (tariff_id=None) — lookup тарифа не дёргаем, создаём как раньше.
 - `tests/crud/test_trial_conversion_on_paid_purchase.py` — Python-модуль
   Классы: нет
-  Функции: `test_create_paid_subscription_converts_alive_trial_of_other_tariff` — Живой триал ДРУГОГО тарифа при платной покупке конвертируется на месте., `test_create_paid_subscription_prefers_same_tariff_alive_trial` — Живой триал ТОГО ЖЕ тарифа берётся из lookup'а напрямую — без второго, `test_create_paid_subscription_uses_passed_conversion_trial` — Кабинет передаёт пре-резолвленного кандидата — повторный lookup не нужен., `test_create_paid_subscription_falls_to_insert_when_conversion_raced` — Конкурентная покупка успела конвертировать кандидата (конверсия вернула, `test_create_paid_subscription_without_trial_falls_to_insert` — Нет живого триала — обычная вставка новой подписки, как раньше., `test_expired_same_tariff_revive_wins_over_conversion` — Истёкшая запись ПОКУПАЕМОГО тарифа реанимируется (#3004) — конверсия, `test_trial_creation_never_triggers_conversion` — Создание САМОГО триала (is_trial=True) не трогает ветку конверсии., `test_convert_helper_delegates_to_extend` — Обёртка конверсии ревалидирует кандидата под локом и делегирует, `test_convert_helper_bails_out_when_candidate_no_longer_trial` — Гонка: под локом кандидат уже не живой триал (конкурентная покупка, `test_resolver_returns_none_when_revive_will_preempt` — EXPIRED подписка покупаемого тарифа → create уйдёт в revive (#3004),, `test_resolver_prefers_same_tariff_alive_trial`, `test_resolver_falls_back_to_freshest_alive_trial`, `test_cabinet_purchase_excludes_conversion_candidate_from_trial_kill` — Source-pin (в духе test_purchase_tariff_expired_trial_reuse): кабинетный
+  Функции: `test_create_paid_subscription_converts_alive_trial_of_other_tariff` — Живой триал ДРУГОГО тарифа при платной покупке конвертируется на месте., `test_create_paid_subscription_prefers_same_tariff_alive_trial` — Живой триал ТОГО ЖЕ тарифа берётся из lookup'а напрямую — без второго, `test_create_paid_subscription_uses_passed_conversion_trial` — Кабинет передаёт пре-резолвленного кандидата — повторный lookup не нужен., `test_create_paid_subscription_falls_to_insert_when_conversion_raced` — Конкурентная покупка успела конвертировать кандидата (конверсия вернула, `test_create_paid_subscription_skips_conversion_when_disabled` — ``convert_alive_trial=False``: живой триал НЕ конвертируется, а вставляется, `test_create_paid_subscription_without_trial_falls_to_insert` — Нет живого триала — обычная вставка новой подписки, как раньше., `test_expired_same_tariff_revive_wins_over_conversion` — Истёкшая запись ПОКУПАЕМОГО тарифа реанимируется (#3004) — конверсия, `test_trial_creation_never_triggers_conversion` — Создание САМОГО триала (is_trial=True) не трогает ветку конверсии., `test_convert_helper_delegates_to_extend` — Обёртка конверсии ревалидирует кандидата под локом и делегирует, `test_convert_helper_bails_out_when_candidate_no_longer_trial` — Гонка: под локом кандидат уже не живой триал (конкурентная покупка, `test_resolver_returns_none_when_revive_will_preempt` — EXPIRED подписка покупаемого тарифа → create уйдёт в revive (#3004),, `test_resolver_prefers_same_tariff_alive_trial`, `test_resolver_falls_back_to_freshest_alive_trial`, `test_cabinet_purchase_keeps_trials_when_buying_new_tariff_multi_tariff` — Source-pin: покупка НОВОГО тарифа в мульти-тарифе ДОБАВЛЯЕТ отдельную
 - `tests/crud/test_trial_subscription_idempotency.py` — Python-модуль
   Классы: нет
   Функции: `test_returns_existing_active_subscription_without_insert` — Если у пользователя уже есть живая (active) подписка на тариф — возвращаем, `test_expired_subscription_does_not_block_new_trial_single_tariff` — В single-tariff режиме EXPIRED-подписка не блокирует создание нового триала, `test_returns_existing_trial_subscription_without_insert` — Статус trial тоже считается живым — возвращаем без INSERT., `test_returns_existing_limited_subscription_without_insert` — Статус limited тоже живой (трафик кончился, время ещё есть) — возвращаем без INSERT., `test_pending_trial_is_activated_not_duplicated` — Существующая PENDING-триальная подписка должна быть переведена в active,, `test_integrity_error_on_commit_returns_concurrent_subscription_multitariff` — Если commit падает с IntegrityError (гонка), делаем rollback, expunge объекта, `test_integrity_error_on_commit_reraises_if_no_concurrent_sub` — Если commit падает с IntegrityError, но найти конкурентную подписку не удалось, `test_integrity_error_from_unrelated_constraint_is_reraised_immediately` — IntegrityError по постороннему constraint (не uq_subscriptions_user_tariff_active), `test_integrity_error_on_commit_returns_concurrent_subscription_single_tariff` — Та же защита от гонки в режиме без multi-tariff: используем, `test_creates_new_subscription_when_no_existing` — Когда у пользователя нет подписки — создаётся новая, db.add и db.commit вызываются., `test_different_tariff_subscription_does_not_block_trial_creation` — Живая подписка на тариф 2 не мешает создать триал на тариф 1.
@@ -3739,7 +3754,7 @@
   Функции: `test_full_chain_provision_serve_swap`
 - `tests/integration/test_artemida_provision_e2e.py` — Python-модуль
   Классы: нет
-  Функции: `test_artemida_provision_e2e`
+  Функции: `test_artemida_provision_e2e`, `test_artemida_provision_rounds_subsecond_drift` — Regression for the prod incident: start_date/end_date are captured by, `test_artemida_trial_uses_create_trial` — A trial must hit POST /trial (create_trial), NOT create_key: the vendor
 - `tests/integration/test_cross_channel_gift_lifecycle.py` — Python-модуль
   Классы: нет
   Функции: `test_lifecycle_bot_purchase_to_bot_activation` — 1. Bot purchase -> Bot activation:, `test_lifecycle_bot_purchase_to_cabinet_activation` — 2. Bot purchase -> Cabinet activation:, `test_lifecycle_cabinet_balance_purchase_to_bot_activation` — 3. Cabinet balance purchase -> Bot activation:, `test_lifecycle_cabinet_gateway_purchase_after_webhook_to_bot_activation` — 4. Cabinet gateway purchase after paid webhook -> Bot activation:, `test_lifecycle_cabinet_purchase_to_cabinet_activation` — 5. Cabinet purchase -> Cabinet activation:, `test_recovery_of_all_purchase_origins_in_bot_my_gifts` — 6. Recovery of each successful source in bot "My gifts":, `test_backward_compat_historical_full_token_derives_canonical_representation` — Historical full-token gifts receive canonical representation without database migration., `test_backward_compat_legacy_short_codes_in_cabinet_and_strict_in_bot` — Legacy short codes (8-char, 12-char, GIFT-<12>) succeed in cabinet but are rejected in bot., `test_backward_compat_directed_gift_callbacks_and_landing_public_email` — Directed gift callbacks (claim_bound_gift_for_user) and public landing email gifts work seamlessly.
@@ -3751,7 +3766,7 @@
   Функции: `restore_providers` — register_provider mutates the module-level _PROVIDERS registry — restore it after., `test_swap_repoints_and_keeps_link`, `test_swap_provision_failure_leaves_old_vendor`, `test_swap_to_same_provider_is_noop`, `test_swap_to_unknown_provider_raises`
 - `tests/integration/test_unlimited_trial_activation.py` — Python-модуль
   Классы: нет
-  Функции: `test_activation_creates_unlimited_trial`, `test_activation_rolls_back_on_vendor_failure`, `test_activation_raises_activation_error_when_rollback_also_fails`
+  Функции: `test_activation_creates_unlimited_trial`, `test_activation_rolls_back_on_vendor_failure`, `test_activation_raises_activation_error_when_rollback_also_fails`, `test_activation_pings_admins` — A successful premium-trial activation notifies admins (the same notification as
 
 ### tests/live
 
@@ -3829,6 +3844,9 @@
 - `tests/services/test_apple_iap_service.py` — Python-модуль
   Классы: нет
   Функции: `anyio_backend`, `test_fulfill_verified_transaction_happy_path_credits_balance_after_user_lock`, `test_fulfill_verified_transaction_insert_race_returns_existing_without_double_credit`, `test_one_time_charge_dispatch_fulfills_account_owner`, `test_refund_success_debits_balance_and_marks_transaction_refunded`, `test_consumption_request_requires_recorded_user_consent`, `test_notification_payload_hash_insert_race_is_treated_as_replay`
+- `tests/services/test_artemida_balance_alert.py` — Python-модуль
+  Классы: нет
+  Функции: `test_alerts_when_balance_below_threshold`, `test_no_alert_when_balance_ok`, `test_disabled_vendor_skips`, `test_threshold_zero_disables_check`, `test_throttle_suppresses_second_alert`
 - `tests/services/test_artemida_provider.py` — Python-модуль
   Классы: нет
   Функции: `test_get_provider_defaults_to_remnawave`, `test_get_provider_artemida`, `test_chunk_days_at_or_under_max_is_a_single_chunk`, `test_chunk_days_splits_into_at_most_90_day_pieces`, `test_chunk_days_rejects_non_positive_days`, `test_provision_calls_client_and_sets_fields`, `test_provision_sets_public_token_and_builds_url_from_it`, `test_provision_days_180_creates_one_90_day_key_and_renews_one_90_day_chunk`, `test_provision_days_360_creates_one_key_and_renews_three_90_day_chunks`, `test_provision_days_100_creates_90_day_key_and_renews_10_day_remainder`, `test_provision_raises_when_rebrand_base_url_missing`, `test_update_renew_uses_end_date_idempotency_key_and_sets_device_limit`, `test_update_renew_days_180_chunks_into_two_90_day_renew_calls`, `test_update_renew_reraises_when_second_chunk_fails_and_leaves_device_limit_unchanged`, `test_update_upgrade_only_uses_end_date_idempotency_key_and_sets_device_limit`, `test_update_without_external_ref_does_not_call_client`, `test_revoke_calls_client_with_key`, `test_revoke_without_external_ref_does_not_call_client`, `test_sync_usage_updates_device_limit_and_subscription_url`, `test_sync_usage_self_heals_missing_public_token`, `test_provision_reraises_insufficient_balance_and_leaves_subscription_unchanged`, `test_provision_reraises_when_second_chunk_renew_fails_and_leaves_subscription_unchanged`
@@ -4290,7 +4308,7 @@
   Функции: `test_rewrites_remark_and_omits_routing`, `test_empty_links_produce_empty_body`
 - `tests/services/test_subscription_renewal_finalize_external.py` — Python-модуль
   Классы: нет
-  Функции: `test_finalize_artemida_renews_vendor_not_panel`, `test_finalize_remnawave_uses_panel_update`, `test_finalize_external_vendor_failure_compensates_and_raises` — A PAID external renew that fails at the vendor must be atomic: revert the, `test_finalize_external_vendor_success_keeps_charge_and_extension` — Regression: when renew_external succeeds (True), the renewal stands — no, `test_finalize_remnawave_panel_failure_defers_to_retry_queue` — Regression: the remnawave path is byte-for-byte unchanged. renew_external
+  Функции: `test_finalize_artemida_renews_vendor_not_panel`, `test_finalize_remnawave_uses_panel_update`, `test_finalize_external_vendor_failure_compensates_and_raises` — A PAID external renew that fails at the vendor must be atomic: revert the, `test_finalize_external_vendor_success_keeps_charge_and_extension` — Regression: when renew_external succeeds (True), the renewal stands — no, `test_finalize_remnawave_panel_failure_defers_to_retry_queue` — Regression: the remnawave path is byte-for-byte unchanged. renew_external, `test_finalize_refuses_vendor_trial_before_charging` — A vendor trial key cannot be renewed at the vendor ("Пробный ключ нельзя
 - `tests/services/test_subscription_service_sync.py` — Python-модуль
   Классы: нет
   Функции: `test_sync_picks_create_or_update_by_panel_id`, `test_missing_user_falls_to_create_which_reports_it` — Пользователя нет в базе: не падаем, create сам залогирует и вернёт None.
@@ -4555,9 +4573,12 @@
 - `tests/webapi/test_admin_move_provider.py` — Python-модуль
   Классы: нет
   Функции: `test_move_provider_authorized_calls_swap_service`, `test_move_provider_unknown_subscription_404`, `test_move_provider_bad_target_returns_400`, `test_move_provider_vendor_failure_returns_502`, `test_move_provider_unauthorized_without_token_401` — No dependency override here — the real ``require_api_token`` runs and must
+- `tests/webapi/test_artemida_install.py` — Python-модуль
+  Классы: нет
+  Функции: `test_wants_install_page_distinguishes_browser_from_client`, `test_render_install_page_uses_appconfig_deeplinks`, `test_route_browser_gets_install_page_no_vendor_fetch`, `test_route_client_gets_config_not_page`
 - `tests/webapi/test_artemida_sub_route.py` — Python-модуль
   Классы: нет
-  Функции: `test_route_returns_rebranded_body`, `test_empty_links_returns_200_with_empty_body`, `test_unknown_token_404`, `test_subscription_with_unknown_provider_returns_404`, `test_vendor_error_returns_502`, `test_non_artemida_vendor_error_also_returns_502` — A future vendor's ``fetch_links`` can raise its own exception type, unrelated
+  Функции: `test_route_serves_vendor_body_under_our_brand`, `test_empty_body_returns_200`, `test_unknown_token_404`, `test_subscription_with_unknown_provider_returns_404`, `test_vendor_error_returns_502`, `test_non_artemida_vendor_error_also_returns_502` — A future vendor's ``fetch_subscription`` can raise its own exception type,, `test_rebrand_headers_inject_brand_support_and_announce` — _rebrand_headers swaps the vendor's brand for ours and injects our info block.
 - `tests/webapi/test_ban_notification_schema.py` — Python-модуль
   Классы: нет
   Функции: `test_typed_ban_notification_types_are_accepted`, `test_unknown_typed_ban_notification_is_rejected`, `test_invalid_numeric_values_are_rejected`, `test_invalid_typed_ban_template_uses_fallback`, `test_unknown_typed_ban_type_returns_safe_error`, `test_external_values_are_escaped_before_html_send` — Имя ноды и тип сети приходят снаружи и уезжают в сообщение с parse_mode=HTML., `test_typed_ban_reason_is_escaped` — Причина бана тоже приходит снаружи — экранируем., `test_warning_text_is_escaped` — Текст предупреждения приходит по API и не должен ломать разметку., `test_revoke_uses_its_own_template` — revoke — это сброс ключей, а не бан: текст должен отличаться от punishment., `test_unexpected_error_returns_500_not_typeerror` — Неожиданная ошибка обязана превращаться в 500, а не в TypeError.

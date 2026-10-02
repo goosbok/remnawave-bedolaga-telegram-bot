@@ -434,6 +434,54 @@ async def _sync_subscription_to_panel(
         return {'error': str(e)}
 
 
+def _is_external_vendor_tariff(tariff) -> bool:
+    """True when the tariff is provisioned at an external paid vendor (Artemida)."""
+    return tariff is not None and (getattr(tariff, 'provider', None) or 'remnawave') != 'remnawave'
+
+
+async def _sub_is_external_vendor(db: AsyncSession, subscription: Subscription) -> bool:
+    """Vendor check that also catches a vendor-tariff sub whose key was never provisioned.
+
+    ``subscription.is_external_vendor`` reads only the ``external_provider`` column,
+    which is empty until provisioning succeeds — a failed/pending vendor sub would
+    slip through every guard. Falling back to the tariff's provider closes that.
+    """
+    # getattr, not plain access: route tests exercise these paths against
+    # lightweight doubles that predate the vendor columns.
+    if getattr(subscription, 'is_external_vendor', False):
+        return True
+    tariff_id = getattr(subscription, 'tariff_id', None)
+    if tariff_id:
+        tariff = await get_tariff_by_id(db, tariff_id)
+        return _is_external_vendor_tariff(tariff)
+    return False
+
+
+async def _post_mutation_sync(
+    db: AsyncSession,
+    user: User,
+    subscription: Subscription,
+    **panel_kwargs,
+) -> dict:
+    """Provider-aware sync after an admin mutation.
+
+    Vendor-backed subs (Artemida) live off our Remnawave panel: pushing them there
+    would create a phantom panel user with squads that mean nothing for the vendor
+    key. They get the free vendor state refresh instead; own-panel subs keep the
+    panel push.
+    """
+    if await _sub_is_external_vendor(db, subscription):
+        try:
+            from app.services.subscription_service import SubscriptionService
+
+            await SubscriptionService().sync_remnawave_user(db, subscription)
+            return {'provider': 'external'}
+        except Exception as e:
+            logger.error('Error syncing vendor subscription', user_id=user.id, error=e)
+            return {'error': str(e)}
+    return await _sync_subscription_to_panel(db, user, subscription, **panel_kwargs)
+
+
 @router.get('', response_model=UsersListResponse)
 async def list_users(
     offset: int = Query(0, ge=0),
@@ -1216,6 +1264,7 @@ async def update_user_subscription(
         connected_squads = []
 
         # Get tariff for settings if provided
+        tariff = None
         if request.tariff_id:
             tariff = await get_tariff_by_id(db, request.tariff_id)
             if tariff:
@@ -1225,6 +1274,34 @@ async def update_user_subscription(
                     device_limit = tariff.device_limit
                 if tariff.allowed_squads:
                     connected_squads = tariff.allowed_squads
+
+        is_vendor_tariff = _is_external_vendor_tariff(tariff)
+        if is_vendor_tariff:
+            # Vendor-backed subs (Artemida) are provisioned off our Remnawave panel:
+            # their locations live in the vendor's config, our squads would be stale.
+            connected_squads = []
+
+        # An expired sub for the same (user, tariff) is REVIVED in place by
+        # create_paid_subscription (multi-tariff invariant), not re-inserted. For a
+        # vendor tariff that changes the vendor semantics: renew the existing key
+        # instead of buying a second one. Capture the pre-revive state so a failed
+        # vendor call can be compensated. (An alive one was already rejected above.)
+        pre_existing = None
+        pre_revive_state = None
+        if is_vendor_tariff and not is_trial and is_multi_tariff and request.tariff_id:
+            from app.database.crud.subscription import get_subscription_by_user_and_tariff
+
+            pre_existing = await get_subscription_by_user_and_tariff(
+                db, user.id, request.tariff_id, include_inactive=True
+            )
+            if pre_existing is not None:
+                pre_revive_state = {
+                    'end_date': pre_existing.end_date,
+                    'start_date': pre_existing.start_date,
+                    'status': pre_existing.status,
+                    'is_trial': pre_existing.is_trial,
+                    'traffic_used_gb': pre_existing.traffic_used_gb,
+                }
 
         from sqlalchemy.exc import IntegrityError
 
@@ -1244,6 +1321,67 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail='User already has an active subscription for this tariff. Extend it instead.',
+            )
+
+        if is_vendor_tariff:
+            # Buy the key at the vendor — this is the whole point of the grant for
+            # a vendor tariff. A revived sub keeps local squad UUIDs from its past
+            # life; they are stale for a vendor key.
+            from app.services.subscription_service import SubscriptionService
+
+            new_sub.connected_squads = []
+            await db.commit()
+            subscription_service = SubscriptionService()
+            try:
+                if new_sub.external_ref:
+                    # Revive of an already-provisioned vendor sub: renew the key it has.
+                    await subscription_service.renew_external(db, new_sub, period_days=days)
+                else:
+                    # Routes to provider.provision() for a vendor tariff.
+                    await subscription_service.create_remnawave_user(db, new_sub)
+            except Exception as vendor_error:
+                logger.error(
+                    'Admin grant: vendor purchase failed, rolling the grant back',
+                    admin_id=admin.id,
+                    user_id=user_id,
+                    tariff_id=request.tariff_id,
+                    error=vendor_error,
+                )
+                try:
+                    if pre_revive_state is not None:
+                        new_sub.end_date = pre_revive_state['end_date']
+                        new_sub.start_date = pre_revive_state['start_date']
+                        new_sub.status = pre_revive_state['status']
+                        new_sub.is_trial = pre_revive_state['is_trial']
+                        new_sub.traffic_used_gb = pre_revive_state['traffic_used_gb']
+                        await db.commit()
+                    else:
+                        await db.delete(new_sub)
+                        await db.commit()
+                except Exception as rollback_error:
+                    logger.critical(
+                        'CRITICAL: admin grant rollback failed — manual cleanup required',
+                        subscription_id=new_sub.id,
+                        user_id=user_id,
+                        error=rollback_error,
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f'Vendor purchase failed, the grant was rolled back: {vendor_error}',
+                )
+
+            logger.info(
+                'Admin created vendor subscription for user',
+                admin_id=admin.id,
+                user_id=user_id,
+                tariff_id=request.tariff_id,
+                provider=getattr(tariff, 'provider', None),
+            )
+
+            return UpdateSubscriptionResponse(
+                success=True,
+                message=f'Subscription created for {days} days (vendor key purchased)',
+                subscription=await _build_subscription_info_async(db, new_sub),
             )
 
         # Sync to Remnawave panel
@@ -1270,6 +1408,54 @@ async def update_user_subscription(
                 detail='Days must be a positive integer',
             )
 
+        if await _sub_is_external_vendor(db, subscription):
+            # Extending a vendor sub is a PAID renew at the vendor: without it the
+            # admin moves end_date, the client pays nothing, and the vendor key
+            # still dies on its old expiry (the 78ccbcfa bug, admin surface).
+            from app.services.subscription_service import SubscriptionService
+
+            old_end_date = subscription.end_date
+            old_status = subscription.status
+            await extend_subscription(db, subscription, request.days)
+            await db.refresh(subscription)
+            subscription_service = SubscriptionService()
+            try:
+                if subscription.external_ref:
+                    await subscription_service.renew_external(db, subscription, period_days=request.days)
+                else:
+                    # The key was never provisioned (a failed grant): buy it now for
+                    # the full local term rather than silently extending nothing.
+                    await subscription_service.create_remnawave_user(db, subscription)
+            except Exception as vendor_error:
+                logger.error(
+                    'Admin extend: vendor renewal failed, rolling the extension back',
+                    admin_id=admin.id,
+                    user_id=user_id,
+                    subscription_id=subscription.id,
+                    days=request.days,
+                    error=vendor_error,
+                )
+                subscription.end_date = old_end_date
+                subscription.status = old_status
+                await db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f'Vendor renewal failed, the extension was rolled back: {vendor_error}',
+                )
+
+            logger.info(
+                'Admin extended vendor subscription for user by days',
+                admin_id=admin.id,
+                user_id=user_id,
+                days=request.days,
+            )
+
+            return UpdateSubscriptionResponse(
+                success=True,
+                message=f'Subscription extended by {request.days} days (vendor key renewed)',
+                subscription=await _build_subscription_info_async(db, subscription),
+            )
+
         await extend_subscription(db, subscription, request.days)
         await db.refresh(subscription)
 
@@ -1293,6 +1479,14 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Days must be a positive integer',
+            )
+
+        if await _sub_is_external_vendor(db, subscription):
+            # The vendor API only renews — a key cannot be shortened, so a local
+            # shorten would desync the client from the key they actually hold.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Shortening is not available for vendor-provisioned subscriptions',
             )
 
         # Сокращение через отрицательный аргумент: extend_subscription(-N) уменьшает end_date
@@ -1332,6 +1526,14 @@ async def update_user_subscription(
                 detail='end_date parameter is required',
             )
 
+        if await _sub_is_external_vendor(db, subscription):
+            # The vendor renews in whole-day chunks from the key's own expiry; an
+            # arbitrary local date would desync the client from the vendor key.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Setting an arbitrary end date is not available for vendor-provisioned subscriptions. Use extend instead.',
+            )
+
         subscription.end_date = request.end_date
         if request.end_date > datetime.now(UTC):
             subscription.status = SubscriptionStatus.ACTIVE.value
@@ -1362,6 +1564,15 @@ async def update_user_subscription(
                 detail='tariff_id parameter is required',
             )
 
+        if await _sub_is_external_vendor(db, subscription):
+            # A tariff relabel cannot cross providers: the vendor key is bound to
+            # its own tariff terms. Relabeling would orphan a paid vendor key.
+            # Cancel + create goes through the real provisioning paths.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Changing the tariff of a vendor-provisioned subscription is not supported. Cancel it and create a new one.',
+            )
+
         # Смена тарифа делает СБП-привязку Platega несогласованной: она продолжила
         # бы списывать СТАРУЮ сумму со СТАРЫМ каденсом. Отменяем привязку — юзер
         # переподключит СБП-автопродление под новый тариф (нужна новая
@@ -1378,6 +1589,14 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Tariff not found',
+            )
+
+        if _is_external_vendor_tariff(tariff):
+            # Relabeling a panel sub onto a vendor tariff would leave it without
+            # any vendor key — the client pays for nothing.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Changing to a vendor-provisioned tariff is not supported. Cancel the subscription and create a new one.',
             )
 
         # Проверка: нельзя сменить тариф, если у пользователя уже есть
@@ -1462,6 +1681,14 @@ async def update_user_subscription(
         )
 
     if request.action == 'set_traffic':
+        if await _sub_is_external_vendor(db, subscription):
+            # Vendor keys carry the vendor's own (unlimited) traffic terms — a
+            # local traffic number changes nothing the client experiences.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Traffic limits are managed by the vendor for this subscription',
+            )
+
         if request.traffic_limit_gb is not None:
             subscription.traffic_limit_gb = request.traffic_limit_gb
 
@@ -1489,6 +1716,14 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='autopay_enabled parameter is required',
+            )
+
+        if request.autopay_enabled and await _sub_is_external_vendor(db, subscription):
+            # Same go-live guard as the client cabinet: the background autopay
+            # paths do not compensate a vendor error, so enabling stays rejected.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Автоплатёж недоступен для этого тарифа',
             )
 
         subscription.autopay_enabled = request.autopay_enabled
@@ -1532,10 +1767,24 @@ async def update_user_subscription(
         await db.commit()
         await db.refresh(subscription)
 
-        # Sync to Remnawave panel
-        await _sync_subscription_to_panel(
-            db, user, subscription, pinned_subscription_identity=request.subscription_id is not None
-        )
+        if await _sub_is_external_vendor(db, subscription):
+            # Release the vendor key or the owner keeps paying for an orphaned one.
+            # Best-effort by design (a vendor TRIAL key answers DELETE with 404).
+            from app.services.subscription_service import SubscriptionService
+
+            try:
+                await SubscriptionService().revoke_external(db, subscription)
+            except Exception as revoke_error:
+                logger.warning(
+                    'Vendor key revoke failed on admin cancel',
+                    subscription_id=subscription.id,
+                    error=revoke_error,
+                )
+        else:
+            # Sync to Remnawave panel
+            await _sync_subscription_to_panel(
+                db, user, subscription, pinned_subscription_identity=request.subscription_id is not None
+            )
 
         logger.info('Admin cancelled subscription for user', admin_id=admin.id, user_id=user_id)
 
@@ -1550,6 +1799,19 @@ async def update_user_subscription(
         # наспамленные дни, обнулить трафик/сквады, пометить DISABLED и ОТКЛЮЧИТЬ в
         # панели RemnaWave (не удаляя). Пользователь и его тикеты сохраняются —
         # дальше юзер сам покупает тариф с нуля и выбирает срок.
+        if await _sub_is_external_vendor(db, subscription):
+            # Release the vendor key before zeroing the sub: the owner otherwise
+            # keeps paying for a key nobody can use. Best-effort, like on cancel.
+            from app.services.subscription_service import SubscriptionService
+
+            try:
+                await SubscriptionService().revoke_external(db, subscription)
+            except Exception as revoke_error:
+                logger.warning(
+                    'Vendor key revoke failed on admin reset',
+                    subscription_id=subscription.id,
+                    error=revoke_error,
+                )
         if request.subscription_id is not None:
             # A selected BP-S reset is fail-closed: never substitute the
             # legacy user panel id, and preserve the selected row for an exact
@@ -1622,8 +1884,8 @@ async def update_user_subscription(
         await db.commit()
         await db.refresh(subscription)
 
-        # Sync to Remnawave panel
-        await _sync_subscription_to_panel(
+        # Sync to the provisioning backend (panel for own subs, vendor refresh otherwise)
+        await _post_mutation_sync(
             db, user, subscription, pinned_subscription_identity=request.subscription_id is not None
         )
 
@@ -1640,6 +1902,14 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='traffic_gb parameter is required for add_traffic action',
+            )
+
+        if await _sub_is_external_vendor(db, subscription):
+            # Vendor keys carry the vendor's own traffic terms — a local top-up
+            # reaches nothing the client connects through.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Traffic top-up is not available for vendor-provisioned subscriptions',
             )
 
         from app.database.crud.subscription import add_subscription_traffic, reactivate_subscription
@@ -1677,6 +1947,12 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='traffic_purchase_id parameter is required for remove_traffic action',
+            )
+
+        if await _sub_is_external_vendor(db, subscription):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Traffic packages are not available for vendor-provisioned subscriptions',
             )
 
         # Find the traffic purchase
@@ -1742,6 +2018,64 @@ async def update_user_subscription(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='device_limit parameter is required for set_device_limit action',
+            )
+
+        if await _sub_is_external_vendor(db, subscription):
+            # A device change on a vendor sub is a PAID upgrade at the vendor
+            # (provider.update → upgrade_key). Local-only edit would lie: the
+            # vendor still enforces the old device count on the key.
+            if not subscription.external_ref:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail='Vendor key is not provisioned for this subscription',
+                )
+            from app.services.providers import get_provider_by_name
+
+            provider_name = subscription.external_provider
+            if not provider_name and subscription.tariff_id:
+                tariff = await get_tariff_by_id(db, subscription.tariff_id)
+                provider_name = getattr(tariff, 'provider', None)
+            provider = get_provider_by_name(provider_name)
+            if provider is None or provider.name == 'remnawave':
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='Unknown vendor provider for this subscription',
+                )
+            from typing import cast
+
+            from app.services.providers.base import SubscriptionProvider
+
+            vendor = cast('SubscriptionProvider', provider)
+            try:
+                await vendor.update(db=db, subscription=subscription, devices=request.device_limit)
+            except Exception as vendor_error:
+                logger.error(
+                    'Admin set_device_limit: vendor upgrade failed',
+                    admin_id=admin.id,
+                    user_id=user_id,
+                    subscription_id=subscription.id,
+                    device_limit=request.device_limit,
+                    error=vendor_error,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f'Vendor device upgrade failed: {vendor_error}',
+                )
+            # provider.update assigns subscription.device_limit itself on success.
+            await db.commit()
+            await db.refresh(subscription)
+
+            logger.info(
+                'Admin set device limit for vendor subscription',
+                admin_id=admin.id,
+                device_limit=request.device_limit,
+                user_id=user_id,
+            )
+
+            return UpdateSubscriptionResponse(
+                success=True,
+                message=f'Device limit set to {request.device_limit} (vendor key upgraded)',
+                subscription=await _build_subscription_info_async(db, subscription),
             )
 
         subscription.device_limit = request.device_limit
@@ -1924,6 +2258,7 @@ async def get_user_available_tariffs(
                 device_limit=tariff.device_limit,
                 tier_level=tariff.tier_level,
                 display_order=tariff.display_order,
+                provider=getattr(tariff, 'provider', None) or 'remnawave',
                 period_prices=period_prices,
                 is_daily=tariff.is_daily,
                 daily_price_kopeks=tariff.daily_price_kopeks,

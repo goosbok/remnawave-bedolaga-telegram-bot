@@ -93,6 +93,8 @@ async def test_change_tariff_preserves_remaining_period(db: AsyncMock) -> None:
     with (
         patch.object(bulk, 'settings', fake_settings),
         patch.object(bulk, 'get_tariff_by_id', AsyncMock(return_value=old_tariff)),
+        # _sub_is_external_vendor resolves the tariff through admin_users' own reference
+        patch('app.cabinet.routes.admin_users.get_tariff_by_id', AsyncMock(return_value=old_tariff)),
         patch.object(bulk, '_sync_subscription_to_panel', AsyncMock(return_value={})),
         patch('app.database.crud.transaction.create_transaction', AsyncMock(return_value=None)),
     ):
@@ -129,6 +131,10 @@ async def test_change_tariff_does_not_extend_almost_expired_sub(db: AsyncMock) -
     with (
         patch.object(bulk, 'settings', fake_settings),
         patch.object(bulk, 'get_tariff_by_id', AsyncMock(return_value=_tariff(tariff_id=1, name='Tariff 1'))),
+        patch(
+            'app.cabinet.routes.admin_users.get_tariff_by_id',
+            AsyncMock(return_value=_tariff(tariff_id=1, name='Tariff 1')),
+        ),
         patch.object(bulk, '_sync_subscription_to_panel', AsyncMock(return_value={})),
         patch('app.database.crud.transaction.create_transaction', AsyncMock(return_value=None)),
     ):
@@ -162,6 +168,10 @@ async def test_change_tariff_keeps_trial_a_trial(db: AsyncMock) -> None:
     with (
         patch.object(bulk, 'settings', fake_settings),
         patch.object(bulk, 'get_tariff_by_id', AsyncMock(return_value=_tariff(tariff_id=1, name='Trial'))),
+        patch(
+            'app.cabinet.routes.admin_users.get_tariff_by_id',
+            AsyncMock(return_value=_tariff(tariff_id=1, name='Trial')),
+        ),
         patch.object(bulk, '_sync_subscription_to_panel', AsyncMock(return_value={})),
         patch('app.database.crud.transaction.create_transaction', AsyncMock(return_value=None)),
     ):

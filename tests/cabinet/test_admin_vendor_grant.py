@@ -75,6 +75,7 @@ def _user(*subscriptions: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(
         id=OWNER_ID,
         telegram_id=1000,
+        username='tester',
         remnawave_id=None,
         subscriptions=list(subscriptions),
         promo_group_id=None,
@@ -450,3 +451,115 @@ async def test_set_device_limit_vendor_upgrades_key(monkeypatch):
     assert response.success is True
     assert sub.device_limit == 5
     db.commit.assert_awaited()
+
+
+# === bulk actions (same admin surface, bulk variant) ===
+
+from app.cabinet.routes import admin_bulk_actions
+from app.cabinet.schemas.bulk_actions import BulkActionParams
+
+
+def _patch_bulk_common(monkeypatch, tariff):
+    monkeypatch.setattr(admin_bulk_actions, 'get_tariff_by_id', AsyncMock(return_value=tariff))
+    monkeypatch.setattr(admin_bulk_actions, '_sync_subscription_to_panel', AsyncMock(return_value={}))
+
+
+async def test_bulk_grant_vendor_tariff_provisions_at_vendor(monkeypatch, service_recorder):
+    tariff = _tariff()
+    new_sub = _subscription(external_ref=None, external_provider=None, is_external_vendor=False)
+    user = _user()
+    _patch_bulk_common(monkeypatch, tariff)
+    create = AsyncMock(return_value=new_sub)
+    monkeypatch.setattr(admin_bulk_actions, 'create_paid_subscription', create)
+    panel_sync = admin_bulk_actions._sync_subscription_to_panel
+    db = _db()
+
+    result = await admin_bulk_actions._do_grant_subscription(db, user, BulkActionParams(days=30), tariff, dry_run=False)
+
+    assert result.success is True
+    assert 'vendor' in result.message
+    assert _recorder().calls == [('create', new_sub.id)]
+    panel_sync.assert_not_called()
+    assert create.await_args.kwargs['connected_squads'] == []
+
+
+async def test_bulk_grant_vendor_failure_rolls_back(monkeypatch, service_recorder):
+    tariff = _tariff()
+    new_sub = _subscription(external_ref=None, external_provider=None, is_external_vendor=False)
+    user = _user()
+    _patch_bulk_common(monkeypatch, tariff)
+    monkeypatch.setattr(admin_bulk_actions, 'create_paid_subscription', AsyncMock(return_value=new_sub))
+
+    async def fail_create(self, db_, subscription, **kwargs):
+        raise RuntimeError('vendor is down')
+
+    monkeypatch.setattr(_SubscriptionServiceRecorder, 'create_remnawave_user', fail_create)
+    db = _db()
+
+    result = await admin_bulk_actions._do_grant_subscription(db, user, BulkActionParams(days=30), tariff, dry_run=False)
+
+    assert result.success is False
+    assert 'Vendor purchase failed' in result.message
+    db.delete.assert_awaited_once_with(new_sub)
+
+
+async def test_bulk_extend_vendor_subscription_renews_key(monkeypatch, service_recorder):
+    sub = _subscription()
+    user = _user(sub)
+    _patch_bulk_common(monkeypatch, _tariff())
+    monkeypatch.setattr(admin_bulk_actions, 'extend_subscription', AsyncMock(return_value=sub))
+    panel_sync = admin_bulk_actions._sync_subscription_to_panel
+
+    result = await admin_bulk_actions._do_extend_subscription(_db(), user, BulkActionParams(days=30), dry_run=False)
+
+    assert result.success is True
+    assert _recorder().calls == [('renew', sub.id, 30)]
+    panel_sync.assert_not_called()
+
+
+async def test_bulk_change_tariff_across_providers_rejected(monkeypatch):
+    sub = _subscription()
+    user = _user(sub)
+    _patch_bulk_common(monkeypatch, _tariff(tariff_id=PANEL_TARIFF_ID, provider='remnawave'))
+
+    result = await admin_bulk_actions._do_change_tariff(
+        _db(),
+        user,
+        BulkActionParams(tariff_id=PANEL_TARIFF_ID),
+        _tariff(tariff_id=PANEL_TARIFF_ID, provider='remnawave'),
+        dry_run=False,
+    )
+
+    assert result.success is False
+    assert 'provider' in result.message
+
+
+async def test_bulk_set_devices_vendor_upgrades_key(monkeypatch):
+    sub = _subscription()
+    user = _user(sub)
+    _patch_bulk_common(monkeypatch, _tariff())
+    provider = AsyncMock()
+    provider.name = 'artemida'
+
+    async def upgrade(*, db, subscription, days=None, devices=None):
+        subscription.device_limit = devices
+
+    provider.update = upgrade
+    monkeypatch.setattr('app.services.providers.get_provider_by_name', lambda name: provider)
+    db = _db()
+
+    result = await admin_bulk_actions._do_set_devices(db, user, BulkActionParams(device_limit=5), dry_run=False)
+
+    assert result.success is True
+    assert sub.device_limit == 5
+
+
+async def test_bulk_add_traffic_vendor_rejected(monkeypatch):
+    sub = _subscription()
+    user = _user(sub)
+    _patch_bulk_common(monkeypatch, _tariff())
+
+    result = await admin_bulk_actions._do_add_traffic(_db(), user, BulkActionParams(traffic_gb=50), dry_run=False)
+
+    assert result.success is False
+    assert 'vendor' in result.message

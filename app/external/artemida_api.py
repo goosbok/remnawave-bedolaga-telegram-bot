@@ -92,7 +92,9 @@ class ArtemidaClient:
 
     async def __aenter__(self) -> Self:
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            # Таймаут обязателен: без него зависший вендор висит 5 минут (aiohttp default),
+            # и /a/{token} превращается в чёрную дыру для клиента (инцидент 2026-10-02).
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20, connect=10))
         return self
 
     async def __aexit__(self, *exc) -> None:

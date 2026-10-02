@@ -266,7 +266,7 @@ class ArtemidaProvider:
         """HTTP seam for the vendor's smart subscription URL (patched in tests)."""
         import aiohttp
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20, connect=10)) as session:
             async with session.get(url, headers=headers, allow_redirects=True) as resp:
                 body = await resp.read()
                 content_type = resp.headers.get('content-type', 'text/plain; charset=utf-8')

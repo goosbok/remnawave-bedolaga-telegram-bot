@@ -153,6 +153,11 @@ async def test_delete_subscription_survives_unloaded_collection():
         patch('app.services.grace_access_runtime.ensure_no_open_grace_for_subscriptions', AsyncMock()),
         patch('app.services.payment.platega.cancel_platega_recurring_for_subscription_safe', AsyncMock()),
         patch('app.services.payment.lava.cancel_lava_recurring_for_subscription_safe', AsyncMock()),
+        # _sub_is_external_vendor resolves the tariff through admin_users' own reference
+        patch(
+            'app.cabinet.routes.admin_users.get_tariff_by_id',
+            AsyncMock(return_value=SimpleNamespace(id=1, provider='remnawave')),
+        ),
     ):
         result = await bulk._do_delete_subscription(db, user, params, dry_run=False, sub_override=sub)
 

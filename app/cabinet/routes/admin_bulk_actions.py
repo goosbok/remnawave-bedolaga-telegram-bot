@@ -43,7 +43,12 @@ from ..schemas.bulk_actions import (
     BulkSubscriptionInfo,
     BulkUserResult,
 )
-from .admin_users import _sync_subscription_to_panel
+from .admin_users import (
+    _is_external_vendor_tariff,
+    _post_mutation_sync,
+    _sub_is_external_vendor,
+    _sync_subscription_to_panel,
+)
 
 
 logger = structlog.get_logger(__name__)
@@ -150,7 +155,7 @@ async def _do_extend_subscription(
     dry_run: bool,
     sub_override: Subscription | None = None,
 ) -> BulkUserResult:
-    days = params.days  # already validated
+    days: int = params.days or 0  # already validated by _require_days
     sub = _resolve_subscription(user, sub_override)
     if not sub:
         return BulkUserResult(user_id=user.id, success=False, message='No subscription found', username=user.username)
@@ -163,8 +168,50 @@ async def _do_extend_subscription(
             username=user.username,
         )
 
+    if await _sub_is_external_vendor(db, sub):
+        # Extending a vendor sub is a PAID renew at the vendor — same as the
+        # single-user admin route. A vendor failure reverts the local dates and
+        # marks this user's bulk result failed.
+        from app.services.subscription_service import SubscriptionService
+
+        old_end_date = sub.end_date
+        old_status = sub.status
+        await extend_subscription(db, sub, days)
+        await db.refresh(sub)
+        try:
+            if sub.external_ref:
+                await SubscriptionService().renew_external(db, sub, period_days=days)
+            else:
+                # The key was never provisioned: buy it now for the full term.
+                await SubscriptionService().create_remnawave_user(db, sub)
+        except Exception as vendor_error:
+            logger.error(
+                'Bulk extend: vendor renewal failed, rolling the extension back',
+                user_id=user.id,
+                subscription_id=sub.id,
+                days=days,
+                error=vendor_error,
+            )
+            sub.end_date = old_end_date
+            sub.status = old_status
+            await db.commit()
+            return BulkUserResult(
+                user_id=user.id,
+                success=False,
+                message=f'Vendor renewal failed, extension rolled back: {vendor_error}',
+                username=user.username,
+            )
+
+        return BulkUserResult(
+            user_id=user.id,
+            success=True,
+            message=f'Subscription extended by {days} days (vendor key renewed)',
+            username=user.username,
+        )
+
     await extend_subscription(db, sub, days)
     await db.refresh(sub)
+
     await _sync_subscription_to_panel(db, user, sub)
 
     return BulkUserResult(
@@ -202,7 +249,17 @@ async def _do_cancel_subscription(
         sub.is_daily_paused = True
     await db.commit()
     await db.refresh(sub)
-    await _sync_subscription_to_panel(db, user, sub)
+
+    if await _sub_is_external_vendor(db, sub):
+        # Release the vendor key or the owner keeps paying for an orphaned one.
+        from app.services.subscription_service import SubscriptionService
+
+        try:
+            await SubscriptionService().revoke_external(db, sub)
+        except Exception as revoke_error:
+            logger.warning('Vendor key revoke failed on bulk cancel', subscription_id=sub.id, error=revoke_error)
+    else:
+        await _sync_subscription_to_panel(db, user, sub)
 
     return BulkUserResult(
         user_id=user.id,
@@ -250,7 +307,7 @@ async def _do_activate_subscription(
         sub.end_date = datetime.now(UTC) + timedelta(days=30)
     await db.commit()
     await db.refresh(sub)
-    await _sync_subscription_to_panel(db, user, sub)
+    await _post_mutation_sync(db, user, sub)
 
     return BulkUserResult(
         user_id=user.id,
@@ -290,6 +347,16 @@ async def _do_change_tariff(
             user_id=user.id,
             success=True,
             message=f'Would change tariff to {tariff.name}',
+            username=user.username,
+        )
+
+    if await _sub_is_external_vendor(db, sub) or _is_external_vendor_tariff(tariff):
+        # A tariff relabel cannot cross providers: it would orphan a paid vendor
+        # key or leave a panel sub mislabeled without any vendor key.
+        return BulkUserResult(
+            user_id=user.id,
+            success=False,
+            message='Tariff change across providers is not supported: cancel the subscription and grant a new one',
             username=user.username,
         )
 
@@ -376,6 +443,16 @@ async def _do_add_traffic(
             user_id=user.id,
             success=True,
             message=f'Would add {traffic_gb} GB traffic',
+            username=user.username,
+        )
+
+    if await _sub_is_external_vendor(db, sub):
+        # Vendor keys carry the vendor's own traffic terms — a local top-up
+        # reaches nothing the client connects through.
+        return BulkUserResult(
+            user_id=user.id,
+            success=False,
+            message='Traffic top-up is not available for vendor-provisioned subscriptions',
             username=user.username,
         )
 
@@ -501,6 +578,61 @@ async def _do_set_devices(
             username=user.username,
         )
 
+    if await _sub_is_external_vendor(db, sub):
+        # A device change on a vendor sub is a PAID upgrade at the vendor
+        # (provider.update → upgrade_key); a local-only edit would lie.
+        if not sub.external_ref:
+            return BulkUserResult(
+                user_id=user.id,
+                success=False,
+                message='Vendor key is not provisioned for this subscription',
+                username=user.username,
+            )
+        from typing import cast
+
+        from app.services.providers import get_provider_by_name
+        from app.services.providers.base import SubscriptionProvider
+
+        provider_name = sub.external_provider
+        if not provider_name and sub.tariff_id:
+            tariff = await get_tariff_by_id(db, sub.tariff_id)
+            provider_name = getattr(tariff, 'provider', None)
+        provider = get_provider_by_name(provider_name)
+        if provider is None or provider.name == 'remnawave':
+            return BulkUserResult(
+                user_id=user.id,
+                success=False,
+                message='Unknown vendor provider for this subscription',
+                username=user.username,
+            )
+        vendor = cast('SubscriptionProvider', provider)
+        try:
+            await vendor.update(db=db, subscription=sub, devices=device_limit)
+        except Exception as vendor_error:
+            logger.error(
+                'Bulk set_devices: vendor upgrade failed',
+                user_id=user.id,
+                subscription_id=sub.id,
+                device_limit=device_limit,
+                error=vendor_error,
+            )
+            return BulkUserResult(
+                user_id=user.id,
+                success=False,
+                message=f'Vendor device upgrade failed: {vendor_error}',
+                username=user.username,
+            )
+        # provider.update assigns sub.device_limit itself on success.
+        await db.commit()
+        await db.refresh(sub)
+
+        return BulkUserResult(
+            user_id=user.id,
+            success=True,
+            message=f'Set devices to {device_limit} (vendor key upgraded)',
+            username=user.username,
+        )
+
     sub.device_limit = device_limit
     await db.commit()
     await db.refresh(sub)
@@ -578,6 +710,18 @@ async def _do_delete_subscription(
     await cancel_platega_recurring_for_subscription_safe(db, sub.id)
 
     await cancel_lava_recurring_for_subscription_safe(db, sub.id)
+
+    if await _sub_is_external_vendor(db, sub):
+        # Release the vendor key before the row disappears or the owner keeps
+        # paying for an orphaned key. Best-effort, same as the deletion service.
+        from app.services.subscription_service import SubscriptionService
+
+        try:
+            await SubscriptionService().revoke_external(db, sub)
+        except Exception as revoke_error:
+            logger.warning(
+                'Vendor key revoke failed on bulk subscription delete', subscription_id=sub.id, error=revoke_error
+            )
     try:
         await ensure_no_open_grace_for_subscriptions(db, (sub.id,))
     except GraceAccessDeletionBlocked:
@@ -683,7 +827,7 @@ async def _do_grant_subscription(
     tariff: Tariff,
     dry_run: bool,
 ) -> BulkUserResult:
-    days = params.days  # already validated
+    days: int = params.days or 0  # already validated by _require_days
     is_multi_tariff = settings.is_multi_tariff_enabled()
     subs = getattr(user, 'subscriptions', None) or []
 
@@ -720,7 +864,27 @@ async def _do_grant_subscription(
             subscriptions=_build_subscription_info(subs),
         )
 
-    connected_squads = tariff.allowed_squads or []
+    is_vendor_tariff = _is_external_vendor_tariff(tariff)
+    # Vendor-backed subs (Artemida) are provisioned off our Remnawave panel:
+    # their locations live in the vendor's config, our squads would be stale.
+    connected_squads = [] if is_vendor_tariff else (tariff.allowed_squads or [])
+
+    # A revive of an already-provisioned vendor sub (expired row for the same
+    # user+tariff) must RENEW the existing key, not buy a second one — and a
+    # failed vendor call must be compensated back to the pre-grant state.
+    pre_revive_state = None
+    if is_vendor_tariff and is_multi_tariff:
+        from app.database.crud.subscription import get_subscription_by_user_and_tariff
+
+        pre_existing = await get_subscription_by_user_and_tariff(db, user.id, tariff.id, include_inactive=True)
+        if pre_existing is not None:
+            pre_revive_state = {
+                'end_date': pre_existing.end_date,
+                'start_date': pre_existing.start_date,
+                'status': pre_existing.status,
+                'is_trial': pre_existing.is_trial,
+                'traffic_used_gb': pre_existing.traffic_used_gb,
+            }
 
     from sqlalchemy.exc import IntegrityError
 
@@ -743,6 +907,63 @@ async def _do_grant_subscription(
             message='Already has subscription for this tariff',
             username=user.username,
             subscriptions=_build_subscription_info(subs),
+        )
+
+    if is_vendor_tariff:
+        # Buy the key at the vendor — the whole point of granting a vendor tariff.
+        from app.services.subscription_service import SubscriptionService
+
+        new_sub.connected_squads = []
+        await db.commit()
+        subscription_service = SubscriptionService()
+        try:
+            if new_sub.external_ref:
+                await subscription_service.renew_external(db, new_sub, period_days=days)
+            else:
+                # Routes to provider.provision() for a vendor tariff.
+                await subscription_service.create_remnawave_user(db, new_sub)
+        except Exception as vendor_error:
+            logger.error(
+                'Bulk grant: vendor purchase failed, rolling the grant back',
+                user_id=user.id,
+                tariff_id=tariff.id,
+                error=vendor_error,
+            )
+            try:
+                if pre_revive_state is not None:
+                    new_sub.end_date = pre_revive_state['end_date']
+                    new_sub.start_date = pre_revive_state['start_date']
+                    new_sub.status = pre_revive_state['status']
+                    new_sub.is_trial = pre_revive_state['is_trial']
+                    new_sub.traffic_used_gb = pre_revive_state['traffic_used_gb']
+                    await db.commit()
+                else:
+                    await db.delete(new_sub)
+                    await db.commit()
+            except Exception as rollback_error:
+                logger.critical(
+                    'CRITICAL: bulk grant rollback failed — manual cleanup required',
+                    subscription_id=new_sub.id,
+                    user_id=user.id,
+                    error=rollback_error,
+                )
+            return BulkUserResult(
+                user_id=user.id,
+                success=False,
+                message=f'Vendor purchase failed, the grant was rolled back: {vendor_error}',
+                username=user.username,
+                subscriptions=_build_subscription_info(subs),
+            )
+
+        await db.refresh(user, ['subscriptions'])
+        refreshed_subs = getattr(user, 'subscriptions', None) or []
+
+        return BulkUserResult(
+            user_id=user.id,
+            success=True,
+            message=f'Subscription granted: {tariff.name} for {days} days (vendor key purchased)',
+            username=user.username,
+            subscriptions=_build_subscription_info(refreshed_subs),
         )
 
     # Sync to RemnaWave panel

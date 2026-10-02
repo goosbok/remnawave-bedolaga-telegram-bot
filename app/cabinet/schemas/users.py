@@ -645,6 +645,10 @@ class UserAvailableTariffItem(BaseModel):
     tier_level: int = 1
     display_order: int = 0
 
+    # Provisioning backend ('remnawave' — own panel, anything else — external paid
+    # vendor: granting this tariff BUYS a key at the vendor)
+    provider: str = 'remnawave'
+
     # Pricing
     period_prices: list[PeriodPriceInfo] = []
     is_daily: bool = False

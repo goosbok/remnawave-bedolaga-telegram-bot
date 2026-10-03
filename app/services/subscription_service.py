@@ -711,6 +711,11 @@ class SubscriptionService:
         access. `provider.update(days=...)` is the only seam that issues a real paid
         renew. Retry-stability is the provider's concern: its idempotency key is keyed
         on the post-extend `end_date`, so re-running this is safe.
+
+        A vendor-tariff subscription whose key was never bought (e.g. granted by an
+        admin before admin grants provisioned at the vendor) has no `external_ref`,
+        and `provider.update()` silently no-ops on it — the renewal would charge the
+        client for literally nothing. Buy the missing key for the paid period instead.
         """
         # Nothing to renew — keep the caller's existing behavior, never touch the vendor.
         if period_days is None or period_days <= 0:
@@ -720,7 +725,16 @@ class SubscriptionService:
         if provider is None:
             return False
 
-        await provider.update(db=db, subscription=subscription, days=period_days)
+        if not getattr(subscription, 'external_ref', None):
+            logger.warning(
+                'Продление вендорской подписки без ключа: покупаем ключ на оплаченный период',
+                subscription_id=getattr(subscription, 'id', None),
+                user_id=getattr(subscription, 'user_id', None),
+                period_days=period_days,
+            )
+            await provider.provision(db=db, subscription=subscription, days=period_days)
+        else:
+            await provider.update(db=db, subscription=subscription, days=period_days)
         await db.commit()
         return True
 

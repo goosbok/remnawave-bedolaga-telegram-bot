@@ -80,6 +80,35 @@ async def test_renew_external_dispatches_paid_renew_for_artemida(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_renew_external_provisions_key_when_never_bought(monkeypatch):
+    """Vendor-tariff sub whose key was never bought (empty external_ref).
+
+    provider.update() silently no-ops without an external_ref, so routing the
+    renewal there charges the client for nothing. The renew must instead BUY the
+    missing key (provision) for exactly the paid period.
+    """
+    provider = SimpleNamespace(name='artemida', update=AsyncMock(), provision=AsyncMock(), sync_usage=AsyncMock())
+    service = SubscriptionService()
+    monkeypatch.setattr(service, '_external_provider_or_none', AsyncMock(return_value=provider))
+    db = AsyncMock()
+    sub = SimpleNamespace(
+        id=42,
+        user_id=1,
+        external_ref=None,
+        external_provider=None,
+        end_date=datetime.now(UTC) + timedelta(days=30),
+    )
+
+    result = await service.renew_external(db, sub, period_days=30)
+
+    assert result is True
+    provider.provision.assert_awaited_once_with(db=db, subscription=sub, days=30)
+    provider.update.assert_not_awaited()
+    provider.sync_usage.assert_not_awaited()
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_renew_external_returns_false_for_remnawave(monkeypatch):
     service = SubscriptionService()
     # remnawave / unprovisioned -> resolver returns None -> caller keeps its behavior.

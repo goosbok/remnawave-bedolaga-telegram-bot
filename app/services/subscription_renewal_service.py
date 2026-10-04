@@ -450,6 +450,74 @@ class SubscriptionRenewalService:
                     refund_error=refund_error,
                 )
 
+    async def renew_external_or_compensate(
+        self,
+        db: AsyncSession,
+        user: User,
+        subscription: Subscription,
+        *,
+        period_days: int,
+        old_end_date: datetime | None,
+        old_status: str,
+        was_expired: bool,
+        charge_from_balance: int,
+        consume_promo_offer: bool = False,
+        saved_promo_percent: int = 0,
+        saved_promo_source: str | None = None,
+        saved_promo_expires: datetime | None = None,
+        subscription_service: SubscriptionService | None = None,
+    ) -> bool:
+        """PAID vendor renew for an already charged + locally extended subscription.
+
+        Shared by every flow that charges the balance, calls ``extend_subscription``
+        and then has to push the renewal out (``finalize``, the bot's tariff extend).
+        Returns True when an external vendor (e.g. Artemida) renewed the key — the
+        caller must then SKIP its panel create/update sync; False for a remnawave /
+        unprovisioned subscription — the caller keeps its existing panel path.
+
+        Внешний вендор продлевается ПЛАТНЫМ вызовом у вендора (провижн-ключ
+        идемпотентен по пост-extend end_date). Это ДЕНЬГИ, а не best-effort синк
+        панели: ``update_remnawave_user`` для такой подписки делает лишь бесплатный
+        ``sync_usage``, а ``create_remnawave_user`` отдаёт закэшированный СТАРЫЙ ключ.
+
+        Сбой платного продления НЕЛЬЗЯ отправлять в remnawave_retry_queue: для
+        внешней подписки очередь роутит на provision (стабильный idempotency-ключ →
+        вендор отдаёт закэшированный СТАРЫЙ ключ → продления НЕТ), т.е. само не
+        вылечится, а клиент уже списан и локально «продлён». Поэтому такой сбой
+        КОМПЕНСИРУЕМ полностью (откат продления + возврат средств) и бросаем
+        ``SubscriptionRenewalChargeError``. Вызов держим под asyncio.timeout, чтобы
+        зависший вендор не держал запрос.
+        """
+        if subscription_service is None:
+            subscription_service = SubscriptionService()
+
+        try:
+            async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
+                return await subscription_service.renew_external(db, subscription, period_days=period_days)
+        except Exception as error:
+            await self._compensate_committed_renewal(
+                db,
+                user,
+                subscription,
+                old_end_date=old_end_date,
+                old_status=old_status,
+                was_expired=was_expired,
+                charge_from_balance=charge_from_balance,
+                consume_promo_offer=consume_promo_offer,
+                saved_promo_percent=saved_promo_percent,
+                saved_promo_source=saved_promo_source,
+                saved_promo_expires=saved_promo_expires,
+            )
+            logger.error(
+                'External vendor renewal failed; renewal fully compensated',
+                subscription_after_id=subscription.id,
+                user_id=user.id,
+                error=error,
+            )
+            raise SubscriptionRenewalChargeError(
+                'External vendor renewal failed; renewal was fully compensated'
+            ) from error
+
     async def finalize(
         self,
         db: AsyncSession,
@@ -599,46 +667,21 @@ class SubscriptionRenewalService:
         reset_devices = settings.RESET_DEVICES_ON_RENEWAL
         subscription_service = SubscriptionService()
 
-        # Внешний вендор (напр. Artemida) продлевается ПЛАТНЫМ вызовом у вендора
-        # (провижн-ключ идемпотентен по пост-extend end_date). Это ДЕНЬГИ, а не
-        # best-effort синк панели: renew_external делает provider.update + commit и
-        # возвращает True (внешний вендор продлён) либо False (remnawave/
-        # непровижиненная — ниже отрабатывает прежний путь панели без изменений).
-        #
-        # Сбой платного продления НЕЛЬЗЯ отправлять в remnawave_retry_queue: для
-        # внешней подписки очередь роутит на provision (стабильный idempotency-ключ →
-        # вендор отдаёт закэшированный СТАРЫЙ ключ → продления НЕТ), т.е. само не
-        # вылечится, а клиент уже списан и локально «продлён». Поэтому такой сбой
-        # КОМПЕНСИРУЕМ полностью (откат продления + возврат средств) и пробрасываем.
-        # Вызов держим под asyncio.timeout, чтобы зависший вендор не держал запрос.
-        try:
-            async with asyncio.timeout(REMNAWAVE_SYNC_TIMEOUT):
-                renewed_external = await subscription_service.renew_external(
-                    db, subscription_after, period_days=period_days
-                )
-        except Exception as error:
-            await self._compensate_committed_renewal(
-                db,
-                user,
-                subscription_after,
-                old_end_date=old_end_date,
-                old_status=old_status,
-                was_expired=was_expired,
-                charge_from_balance=charge_from_balance,
-                consume_promo_offer=consume_promo_offer,
-                saved_promo_percent=saved_promo_percent,
-                saved_promo_source=saved_promo_source,
-                saved_promo_expires=saved_promo_expires,
-            )
-            logger.error(
-                'External vendor renewal failed; renewal fully compensated',
-                subscription_after_id=subscription_after.id,
-                user_id=user.id,
-                error=error,
-            )
-            raise SubscriptionRenewalChargeError(
-                'External vendor renewal failed; renewal was fully compensated'
-            ) from error
+        renewed_external = await self.renew_external_or_compensate(
+            db,
+            user,
+            subscription_after,
+            period_days=period_days,
+            old_end_date=old_end_date,
+            old_status=old_status,
+            was_expired=was_expired,
+            charge_from_balance=charge_from_balance,
+            consume_promo_offer=consume_promo_offer,
+            saved_promo_percent=saved_promo_percent,
+            saved_promo_source=saved_promo_source,
+            saved_promo_expires=saved_promo_expires,
+            subscription_service=subscription_service,
+        )
 
         if not renewed_external:
             # remnawave / непровижиненная подписка — прежний best-effort синк панели с

@@ -2095,6 +2095,8 @@
   "TARIFF_RENEW_SUB_BUTTON": "🔄 {name} ({days}d)",
   "TARIFF_RENEW_SUCCESS": "🎉 <b>Subscription renewed!</b>\n\n📦 Plan: <b>{name}</b>\n📊 Traffic: {traffic}\n📱 Devices: {devices}\n📅 Added: {period}\n💰 Charged: {price}",
   "TARIFF_RENEW_TITLE": "🔄 <b>Subscription renewal</b>{discount_hint}\n\n📦 Plan: <b>{name}</b>\n📊 Traffic: {traffic}\n📱 Devices: {devices}\n\nChoose a renewal period:",
+  "TARIFF_RENEW_VENDOR_ERROR": "❌ Could not renew the subscription. The funds were returned to your balance, please try again later.",
+  "TARIFF_RENEW_VENDOR_TRIAL": "A trial subscription cannot be renewed — please purchase a plan",
   "TARIFF_SWITCH_BUTTON_FREE": "{name} (free)",
   "TARIFF_SWITCH_CHARGED_LINE": "💰 Charged: {price}",
   "TARIFF_SWITCH_CONFIRM": "✅ <b>Plan switch confirmation</b>\n\n📌 Current plan: <b>{current}</b>\n📦 New plan: <b>{name}</b>\n📊 Traffic: {traffic}\n📱 Devices: {devices}\n{time_info}\n{discount}\n💰 <b>To pay: {total}</b>\n\n💳 Your balance: {balance}\nAfter payment: {after}",

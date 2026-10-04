@@ -3031,6 +3031,16 @@ async def confirm_tariff_extend(
         )
         return
 
+    # Пробный ключ внешнего вендора (Artemida) не продлевается: вендор отказывает
+    # в renew на trial-ключе. Отсекаем ДО списания — иначе конвертация триала
+    # (is_trial/tariff_id) закоммитится, а компенсация откатит только end_date.
+    if subscription.is_trial and (subscription.external_provider or 'remnawave') != 'remnawave':
+        await callback.answer(
+            texts.t('TARIFF_RENEW_VENDOR_TRIAL', 'Пробную подписку нельзя продлить — оформите тариф'),
+            show_alert=True,
+        )
+        return
+
     actual_device_limit = subscription.device_limit or tariff.device_limit
 
     from app.database.crud.user import lock_user_for_pricing
@@ -3065,6 +3075,12 @@ async def confirm_tariff_extend(
         pass
 
     try:
+        # Состояние промо-предложения ДО списания — чтобы компенсация сбоя вендора
+        # могла вернуть его вместе с деньгами.
+        saved_promo_percent = int(db_user.promo_offer_discount_percent or 0) if consume_promo else 0
+        saved_promo_source = db_user.promo_offer_discount_source if consume_promo else None
+        saved_promo_expires = db_user.promo_offer_discount_expires_at if consume_promo else None
+
         # Списываем баланс
         success = await subtract_user_balance(
             db,
@@ -3083,6 +3099,13 @@ async def confirm_tariff_extend(
 
         # Запоминаем, был ли триал ДО продления
         was_trial = subscription.is_trial
+        # extend_subscription коммитит новую дату (и expired → active), поэтому для
+        # компенсации сбоя вендора состояние до продления фиксируем заранее.
+        old_end_date = subscription.end_date
+        old_status = subscription.status
+        was_expired = old_status in ('expired', 'disabled', 'limited') or (
+            old_end_date is not None and old_end_date <= datetime.now(UTC)
+        )
 
         # Продлеваем подписку; для триала передаём tariff_id чтобы сбросить is_trial
         subscription = await extend_subscription(
@@ -3094,37 +3117,76 @@ async def confirm_tariff_extend(
             device_limit=actual_device_limit if was_trial else None,
         )
 
-        # Обновляем пользователя в Remnawave
+        subscription_service = SubscriptionService()
+
+        # Подписка внешнего вендора (Artemida) продлевается ПЛАТНЫМ renew у вендора:
+        # update_remnawave_user для неё — лишь бесплатный refresh, ключ остался бы
+        # со старой датой. Сбой вендора полностью компенсируется (откат продления +
+        # возврат денег/промо) — сообщаем клиенту и выходим без транзакции.
+        from app.services.subscription_renewal_service import (
+            SubscriptionRenewalChargeError,
+            SubscriptionRenewalService,
+        )
+
         try:
-            subscription_service = SubscriptionService()
-            if settings.is_multi_tariff_enabled():
-                _should_create = not subscription.remnawave_id
-            else:
-                _should_create = not getattr(db_user, 'remnawave_id', None)
-
-            if _should_create:
-                await subscription_service.create_remnawave_user(
-                    db,
-                    subscription,
-                    reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT or was_trial,
-                    reset_reason='конвертация триала' if was_trial else 'продление тарифа',
-                )
-            else:
-                await subscription_service.update_remnawave_user(
-                    db,
-                    subscription,
-                    reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT or was_trial,
-                    reset_reason='конвертация триала' if was_trial else 'продление тарифа',
-                )
-        except Exception as e:
-            logger.error('Ошибка обновления Remnawave', error=e)
-            from app.services.remnawave_retry_queue import remnawave_retry_queue
-
-            remnawave_retry_queue.enqueue(
-                subscription_id=subscription.id,
-                user_id=db_user.id,
-                action='create',
+            renewed_external = await SubscriptionRenewalService().renew_external_or_compensate(
+                db,
+                db_user,
+                subscription,
+                period_days=period,
+                old_end_date=old_end_date,
+                old_status=old_status,
+                was_expired=was_expired,
+                charge_from_balance=final_price,
+                consume_promo_offer=consume_promo,
+                saved_promo_percent=saved_promo_percent,
+                saved_promo_source=saved_promo_source,
+                saved_promo_expires=saved_promo_expires,
+                subscription_service=subscription_service,
             )
+        except SubscriptionRenewalChargeError:
+            try:
+                await callback.message.edit_text(
+                    texts.t(
+                        'TARIFF_RENEW_VENDOR_ERROR',
+                        '❌ Не удалось продлить подписку. Средства возвращены на баланс, попробуйте позже.',
+                    )
+                )
+            except Exception:
+                pass
+            return
+
+        # Обновляем пользователя в Remnawave (внешний вендор уже продлён выше)
+        if not renewed_external:
+            try:
+                if settings.is_multi_tariff_enabled():
+                    _should_create = not subscription.remnawave_id
+                else:
+                    _should_create = not getattr(db_user, 'remnawave_id', None)
+
+                if _should_create:
+                    await subscription_service.create_remnawave_user(
+                        db,
+                        subscription,
+                        reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT or was_trial,
+                        reset_reason='конвертация триала' if was_trial else 'продление тарифа',
+                    )
+                else:
+                    await subscription_service.update_remnawave_user(
+                        db,
+                        subscription,
+                        reset_traffic=settings.RESET_TRAFFIC_ON_PAYMENT or was_trial,
+                        reset_reason='конвертация триала' if was_trial else 'продление тарифа',
+                    )
+            except Exception as e:
+                logger.error('Ошибка обновления Remnawave', error=e)
+                from app.services.remnawave_retry_queue import remnawave_retry_queue
+
+                remnawave_retry_queue.enqueue(
+                    subscription_id=subscription.id,
+                    user_id=db_user.id,
+                    action='create',
+                )
 
         # Создаем транзакцию
         await create_transaction(

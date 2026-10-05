@@ -190,15 +190,20 @@ def create_web_api_app(lifespan: Any = None) -> FastAPI:
         docs_url=docs_config.get('docs_url'),
         redoc_url=None,
         openapi_url=docs_config.get('openapi_url'),
+        root_path=settings.WEB_API_ROOT_PATH,
         swagger_ui_parameters={'persistAuthorization': True},
         redirect_slashes=False,
         lifespan=lifespan,
     )
 
+    # ReDoc рисуется кастомным хендлером (app/webapi/docs.py), который не знает
+    # про root_path: префикс прокси добавляем к openapi_url вручную, иначе за
+    # префиксным reverse-proxy (/bot-admin) страница тянет спеку с корня домена.
+    _openapi_url = docs_config.get('openapi_url')
     add_redoc_endpoint(
         app,
         redoc_url=docs_config.get('redoc_url'),
-        openapi_url=docs_config.get('openapi_url'),
+        openapi_url=f'{settings.WEB_API_ROOT_PATH}{_openapi_url}' if _openapi_url else None,
         title=settings.WEB_API_TITLE,
     )
 

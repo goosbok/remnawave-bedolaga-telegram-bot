@@ -1426,6 +1426,10 @@ class Settings(BaseSettings):
     WEB_API_WORKERS: int = 1
     WEB_API_ALLOWED_ORIGINS: str = '*'
     WEB_API_DOCS_ENABLED: bool = False
+    # Префикс reverse-proxy, под которым API выставлен наружу (напр. /bot-admin на
+    # домене панели). Нужен Swagger UI: без него страница /docs тянет openapi.json
+    # с корня домена и получает 404. На маршруты самого приложения не влияет.
+    WEB_API_ROOT_PATH: str = ''
     WEB_API_TITLE: str = 'Remnawave Bot Admin API'
     WEB_API_VERSION: str = '1.0.0'
     WEB_API_DEFAULT_TOKEN: str | None = None

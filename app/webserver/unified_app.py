@@ -56,6 +56,7 @@ def _create_base_app(lifespan: Any = None) -> FastAPI:
             docs_url=docs_config.get('docs_url'),
             redoc_url=None,
             openapi_url=docs_config.get('openapi_url'),
+            root_path=settings.WEB_API_ROOT_PATH,
             lifespan=lifespan,
         )
 

@@ -207,3 +207,34 @@ async def test_unified_app_docs_enabled_with_alias(monkeypatch: pytest.MonkeyPat
 
     redoc_response = await redoc_route.endpoint()  # type: ignore[func-returns-value]
     assert b'ReDoc' in redoc_response.body  # type: ignore[attr-defined]
+
+
+def test_unified_app_applies_web_api_root_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WEB_API_ROOT_PATH (префикс reverse-proxy) пробрасывается в FastAPI.
+
+    Без root_path Swagger UI за префиксным прокси (/bot-admin) тянет openapi.json
+    с корня домена и получает 404 — «Failed to load API definition».
+    """
+    monkeypatch.setattr(settings, 'WEB_API_ROOT_PATH', '/bot-admin')
+    app = _build_unified_app(monkeypatch, docs_enabled=True)
+
+    assert app.root_path == '/bot-admin'
+
+
+def test_web_api_app_applies_root_path_and_prefixes_redoc_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ветка create_web_api_app: root_path + openapi_url кастомного ReDoc с префиксом."""
+    from app.webapi.app import create_web_api_app
+
+    monkeypatch.setattr(settings, 'WEB_API_ROOT_PATH', '/bot-admin')
+    monkeypatch.setattr(settings, 'WEB_API_DOCS_ENABLED', True)
+
+    app = create_web_api_app()
+
+    assert app.root_path == '/bot-admin'
+    assert app.openapi_url == '/openapi.json'
+
+    redoc_route = next(
+        (route for route in app.routes if getattr(route, 'path', None) == '/redoc'),
+        None,
+    )
+    assert redoc_route is not None
